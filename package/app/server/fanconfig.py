@@ -1,0 +1,269 @@
+"""Configuration schema, validation and the fan curve engine."""
+
+from __future__ import annotations
+
+import copy
+import json
+import os
+import tempfile
+
+CONFIG_VERSION = 1
+
+SOURCE_KEYS = ("cpu", "gpu", "hdd")
+MODES = ("curve", "manual", "auto")
+
+#: Fallback curve: quiet when cool, full speed well before the CPU is unhappy.
+DEFAULT_CPU_POINTS = [[30, 20], [45, 35], [60, 60], [75, 100]]
+
+#: Disk driven curve: disks dislike sustained temperatures above ~45 C.
+DEFAULT_HDD_POINTS = [[30, 20], [40, 30], [48, 60], [55, 100]]
+
+DEFAULT_CONFIG = {
+    "version": CONFIG_VERSION,
+    # A missing key means "existing install, do not nag with the wizard";
+    # a fresh install writes it explicitly as False.
+    "setup_complete": True,
+    "enabled": True,
+    "interval": 3,
+    "hdd_interval": 60,
+    "hysteresis": 3,
+    "fail_safe_duty": 255,
+    "sources": {
+        "cpu": True,
+        "gpu": False,
+        "hdd": True,
+        "hdd_devices": [],
+    },
+    "fans": [],
+}
+
+
+# --------------------------------------------------------------------------- #
+# curve maths
+# --------------------------------------------------------------------------- #
+
+
+def interpolate(points, temperature):
+    """Linear interpolation of a ``[[temp, percent], ...]`` curve."""
+    if not points:
+        return None
+    ordered = sorted(([float(p[0]), float(p[1])] for p in points), key=lambda p: p[0])
+    if temperature <= ordered[0][0]:
+        return ordered[0][1]
+    if temperature >= ordered[-1][0]:
+        return ordered[-1][1]
+    for (t0, p0), (t1, p1) in zip(ordered, ordered[1:]):
+        if t0 <= temperature <= t1:
+            if t1 == t0:
+                return p1
+            return p0 + (temperature - t0) * (p1 - p0) / (t1 - t0)
+    return ordered[-1][1]
+
+
+def duty_from_percent(percent, min_duty=0, max_duty=255):
+    """Convert a curve percentage into a 0-255 PWM duty, honouring the limits."""
+    duty = int(round(float(percent) * 255.0 / 100.0))
+    return max(int(min_duty), min(int(max_duty), duty))
+
+
+# --------------------------------------------------------------------------- #
+# validation
+# --------------------------------------------------------------------------- #
+
+
+def _clean_points(raw, fallback):
+    points = []
+    if isinstance(raw, (list, tuple)):
+        for item in raw:
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            try:
+                temp = float(item[0])
+                percent = float(item[1])
+            except (TypeError, ValueError):
+                continue
+            points.append([max(0.0, min(120.0, temp)), max(0.0, min(100.0, percent))])
+    points.sort(key=lambda p: p[0])
+    if len(points) < 2:
+        return copy.deepcopy(fallback)
+    return points
+
+
+def _clean_sources(raw):
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return ["cpu"]
+    picked = [key for key in raw if key in SOURCE_KEYS]
+    return picked or ["cpu"]
+
+
+def normalise(config, channels=None):
+    """Return a validated deep copy of ``config``, filling in every default."""
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    if isinstance(config, dict):
+        for key, value in config.items():
+            if key in ("fans", "sources"):
+                continue
+            if key in cfg:
+                cfg[key] = value
+
+    sources = config.get("sources") if isinstance(config, dict) else None
+    if isinstance(sources, dict):
+        for key in ("cpu", "gpu", "hdd"):
+            if key in sources:
+                cfg["sources"][key] = bool(sources[key])
+        devices = sources.get("hdd_devices")
+        if isinstance(devices, (list, tuple)):
+            cfg["sources"]["hdd_devices"] = [str(d) for d in devices]
+
+    known = {channel.index for channel in channels} if channels else None
+    fans = []
+    raw_fans = config.get("fans") if isinstance(config, dict) else None
+    for entry in raw_fans if isinstance(raw_fans, (list, tuple)) else []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            channel = int(entry.get("channel"))
+        except (TypeError, ValueError):
+            continue
+        if known is not None and channel not in known:
+            continue  # header no longer exists on this machine
+
+        mode = entry.get("mode")
+        if mode not in MODES:
+            mode = "curve"
+
+        min_duty = _clamp_int(entry.get("min_duty"), 0, 255, 0)
+        max_duty = _clamp_int(entry.get("max_duty"), 0, 255, 255)
+        if min_duty > max_duty:
+            min_duty, max_duty = max_duty, min_duty
+
+        is_cpu = "cpu" in _clean_sources(entry.get("source"))
+        fans.append(
+            {
+                "channel": channel,
+                "name": str(entry.get("name") or ("fan%d" % channel))[:32],
+                "mode": mode,
+                "source": _clean_sources(entry.get("source")),
+                "points": _clean_points(
+                    entry.get("points"),
+                    DEFAULT_CPU_POINTS if is_cpu else DEFAULT_HDD_POINTS,
+                ),
+                "min_duty": min_duty,
+                "max_duty": max_duty,
+                "manual_duty": _clamp_int(entry.get("manual_duty"), 0, 255, 128),
+            }
+        )
+    fans.sort(key=lambda fan: fan["channel"])
+    cfg["fans"] = fans
+
+    cfg["version"] = CONFIG_VERSION
+    cfg["setup_complete"] = bool(cfg.get("setup_complete", True))
+    cfg["enabled"] = bool(cfg.get("enabled", True))
+    cfg["interval"] = _clamp_int(cfg.get("interval"), 1, 60, 3)
+    cfg["hdd_interval"] = _clamp_int(cfg.get("hdd_interval"), 10, 3600, 60)
+    cfg["hysteresis"] = _clamp_int(cfg.get("hysteresis"), 0, 20, 3)
+    cfg["fail_safe_duty"] = _clamp_int(cfg.get("fail_safe_duty"), 0, 255, 255)
+    return cfg
+
+
+def _clamp_int(value, low, high, fallback):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(low, min(high, number))
+
+
+# --------------------------------------------------------------------------- #
+# default configuration derived from the detected hardware
+# --------------------------------------------------------------------------- #
+
+
+#: Temperature source labels that mean "this header watches the CPU".
+CPU_TEMP_TOKENS = ("peci", "cputin", "cpu", "tctl", "tdie")
+
+
+def default_fan_for_channel(channel):
+    """Sensible defaults for one header, guessed from the BIOS configuration.
+
+    The BIOS already tells us which temperature each header was configured
+    against (``pwmN_temp_sel``): a PECI-backed source means the header is
+    watching the CPU, anything else is a chassis header.  Chassis headers cool
+    the disks first but fall back to CPU temperature, so a missing disk sensor
+    can never leave one stuck at full speed.
+    """
+    label = (getattr(channel, "temp_sel_label", None) or "").strip().lower()
+    cpu_header = any(token in label for token in CPU_TEMP_TOKENS)
+    if cpu_header:
+        return {
+            "channel": channel.index,
+            "name": "CPU_FAN",
+            "mode": "curve",
+            "source": ["cpu"],
+            "points": copy.deepcopy(DEFAULT_CPU_POINTS),
+            "min_duty": 60,
+            "max_duty": 255,
+            "manual_duty": 128,
+        }
+    return {
+        "channel": channel.index,
+        "name": "FAN%d (机箱)" % channel.index,
+        "mode": "curve",
+        "source": ["hdd", "cpu"],
+        "points": copy.deepcopy(DEFAULT_HDD_POINTS),
+        "min_duty": 0,
+        "max_duty": 255,
+        "manual_duty": 128,
+    }
+
+
+def build_default_config(channels, setup_complete=False, only_present=True):
+    """Starting point for the fans found on this machine.
+
+    ``only_present`` skips headers that have never reported a tach signal; the
+    first-run wizard turns it off so the user sees every real channel.
+    """
+    fans = []
+    for channel in channels:
+        if only_present and not channel.present:
+            continue
+        fans.append(default_fan_for_channel(channel))
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    cfg["fans"] = fans
+    cfg["setup_complete"] = bool(setup_complete)
+    return normalise(cfg, channels)
+
+
+# --------------------------------------------------------------------------- #
+# persistence
+# --------------------------------------------------------------------------- #
+
+
+def load(path, channels=None):
+    """Read the config from ``path``; a missing or broken file yields defaults."""
+    try:
+        with open(path, "r") as handle:
+            raw = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return normalise(raw, channels)
+
+
+def save(path, config):
+    """Atomically persist the config, creating the directory when needed."""
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        "w", dir=directory, prefix=".config-", suffix=".json", delete=False
+    )
+    try:
+        json.dump(config, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    finally:
+        handle.close()
+    os.replace(handle.name, path)
+    return path

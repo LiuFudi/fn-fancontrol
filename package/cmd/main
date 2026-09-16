@@ -1,0 +1,169 @@
+#!/bin/bash
+# fn-fancontrol lifecycle script: start / stop / status.
+#
+# Environment provided by the fnOS app center:
+#   TRIM_APPDEST  installed application files (target)
+#   TRIM_PKGETC   persistent configuration
+#   TRIM_PKGVAR   persistent runtime data
+set -u
+
+APPNAME="fn-fancontrol"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+APPDEST="${TRIM_APPDEST:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+PKGVAR="${TRIM_PKGVAR:-${APPDEST}/var}"
+PKGETC="${TRIM_PKGETC:-${APPDEST}/etc}"
+
+LOG_FILE="${PKGVAR}/info.log"
+PID_FILE="${PKGVAR}/app.pid"
+SOCKET="${APPDEST}/app.sock"
+DAEMON="${APPDEST}/server/fancontrold.py"
+PYTHON="$(command -v python3 || echo /usr/bin/python3)"
+
+mkdir -p "$PKGVAR" 2>/dev/null
+
+log_msg() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE" 2>/dev/null
+}
+
+check_process() {
+    [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null
+}
+
+running_pid() {
+    [ -r "$PID_FILE" ] || return 1
+    local pid
+    pid="$(head -n 1 "$PID_FILE" 2>/dev/null | tr -d '[:space:]')"
+    if check_process "$pid"; then
+        printf '%s' "$pid"
+        return 0
+    fi
+    rm -f "$PID_FILE"
+    return 1
+}
+
+status() {
+    running_pid >/dev/null 2>&1
+}
+
+start_process() {
+    if status; then
+        log_msg "already running (pid $(running_pid))"
+        return 0
+    fi
+
+    if [ ! -r "$DAEMON" ]; then
+        log_msg "ERROR: daemon not found at $DAEMON"
+        echo "$APPNAME: daemon not found at $DAEMON" >> "${TRIM_TEMP_LOGFILE:-/dev/null}"
+        return 1
+    fi
+
+    if [ ! -x "$PYTHON" ]; then
+        log_msg "ERROR: python3 not found"
+        echo "$APPNAME: python3 is required but was not found" >> "${TRIM_TEMP_LOGFILE:-/dev/null}"
+        return 1
+    fi
+
+    # A socket left behind by a crash would block the bind.
+    rm -f "$SOCKET" 2>/dev/null
+
+    log_msg "starting $APPNAME"
+    # The daemon must run as root: it writes /sys/class/hwmon/*/pwm* and may
+    # load the SuperIO kernel module.  Only the fnOS gateway (which runs as
+    # root) can reach the resulting socket, and --require-admin additionally
+    # rejects any logged-in non-administrator the gateway forwards.
+    nohup "$PYTHON" "$DAEMON" run \
+        --appdest "$APPDEST" \
+        --etc "$PKGETC" \
+        --socket "$SOCKET" \
+        --ui "${APPDEST}/ui" \
+        --require-admin \
+        >> "$LOG_FILE" 2>&1 &
+    local pid=$!
+    printf '%s' "$pid" > "$PID_FILE"
+    log_msg "pid = $pid"
+
+    local count=0
+    while [ "$count" -lt 15 ]; do
+        if ! check_process "$pid"; then
+            log_msg "ERROR: daemon exited during startup"
+            rm -f "$PID_FILE"
+            return 1
+        fi
+        [ -S "$SOCKET" ] && break
+        sleep 1
+        count=$((count + 1))
+    done
+    log_msg "started (socket=$SOCKET)"
+    return 0
+}
+
+stop_process() {
+    local pid
+    if ! pid="$(running_pid)"; then
+        # Nothing tracked, but a stray daemon may still hold the socket.
+        restore_bios
+        rm -f "$SOCKET" 2>/dev/null
+        return 0
+    fi
+
+    log_msg "stopping pid $pid"
+    kill -TERM "$pid" 2>/dev/null
+
+    local count=0
+    while check_process "$pid" && [ "$count" -lt 15 ]; do
+        sleep 1
+        count=$((count + 1))
+    done
+
+    local forced=0
+    if check_process "$pid"; then
+        log_msg "forcing kill of pid $pid"
+        kill -KILL "$pid" 2>/dev/null
+        sleep 1
+        forced=1
+    fi
+
+    rm -f "$PID_FILE"
+    rm -f "$SOCKET" 2>/dev/null
+
+    if [ "$forced" -eq 1 ]; then
+        # The daemon got no chance to tidy up, so fall back to handing every
+        # header back to the BIOS.
+        log_msg "daemon had to be killed, running fallback restore"
+        restore_bios
+    else
+        # On a clean exit the daemon already restored exactly the channels it
+        # was driving.  Do NOT blanket-restore here: that would rewrite headers
+        # the app never managed (e.g. a BIOS-manual header) on every stop.
+        log_msg "daemon exited cleanly; it restored the channels it managed"
+    fi
+    log_msg "stopped"
+    return 0
+}
+
+restore_bios() {
+    if [ -r "$DAEMON" ] && [ -x "$PYTHON" ]; then
+        "$PYTHON" "$DAEMON" restore --appdest "$APPDEST" --etc "$PKGETC" >> "$LOG_FILE" 2>&1
+        log_msg "restore exit=$?"
+    fi
+}
+
+case "${1:-}" in
+start)
+    start_process || exit 1
+    exit 0
+    ;;
+stop)
+    stop_process || exit 1
+    exit 0
+    ;;
+status)
+    if status; then
+        exit 0
+    fi
+    exit 3
+    ;;
+*)
+    exit 1
+    ;;
+esac

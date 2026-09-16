@@ -1,0 +1,36 @@
+#!/bin/bash
+# Called after the application files have been installed.
+#
+# Creates a first configuration based on the fan headers this machine actually
+# exposes, so the user opens the UI on a working setup instead of a blank one.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+APPDEST="${TRIM_APPDEST:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+PKGETC="${TRIM_PKGETC:-${APPDEST}/etc}"
+PKGVAR="${TRIM_PKGVAR:-${APPDEST}/var}"
+LOG="${TRIM_TEMP_LOGFILE:-${PKGVAR}/install.log}"
+PYTHON="$(command -v python3 || echo /usr/bin/python3)"
+DAEMON="${APPDEST}/server/fancontrold.py"
+
+mkdir -p "$PKGETC" "$PKGVAR" 2>/dev/null
+
+fail() {
+    echo "fn-fancontrol: $1" >> "$LOG" 2>/dev/null
+    exit 1
+}
+
+[ -x "$PYTHON" ] || fail "python3 is required but was not found"
+[ -r "$DAEMON" ] || fail "daemon not found at $DAEMON"
+
+# Make the SuperIO fan controller (and the SATA disk temperature sensor)
+# available. Both are best effort: without nct6775 the UI still loads and
+# explains what is missing.
+modprobe nct6775 2>/dev/null || true
+modprobe drivetemp 2>/dev/null || true
+
+# An existing configuration always wins, including across reinstalls.
+"$PYTHON" "$DAEMON" init-config --appdest "$APPDEST" --etc "$PKGETC" >> "$LOG" 2>&1 \
+    || fail "could not create the default configuration"
+
+exit 0

@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>风扇控制</title>
+<link rel="stylesheet" href="__FC_BASE__style.css" />
+<script>window.FANCONTROL_BASE = "__FC_BASE__";</script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="pulse" id="health" title="状态"></span>
+      <div class="brand-text">
+        <h1>风扇控制</h1>
+        <p class="sub" id="subtitle">正在连接…</p>
+      </div>
+    </div>
+    <div class="actions">
+      <label class="switch" title="关闭后所有风扇交还 BIOS 自动控制">
+        <input type="checkbox" id="master" />
+        <span class="track"><span class="knob"></span></span>
+        <span class="switch-label">启用调速</span>
+      </label>
+      <button class="btn ghost" id="btn-detect" title="重新扫描风扇控制器与实际通道">硬件检测</button>
+      <button class="btn ghost" id="btn-restore" title="立即让 BIOS 接管所有风扇">交还 BIOS</button>
+      <button class="btn ghost" id="btn-reload">放弃修改</button>
+      <button class="btn primary" id="btn-save">保存</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="alert hidden" id="alert"></div>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>温度源</h2>
+        <p>选择参与调速的温度来源；一个风扇勾选多个来源时取其中的最高温度。</p>
+      </div>
+      <div class="sources" id="sources"></div>
+      <div class="disks" id="disks"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>风扇</h2>
+        <p>拖动曲线上的圆点调整曲线，双击空白处新增节点，右键节点删除节点。</p>
+      </div>
+      <div class="fans" id="fans"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>全局设置</h2>
+        <p>硬盘温度变化缓慢，单独设置较长的读取间隔可避免频繁唤醒休眠中的硬盘。</p>
+      </div>
+      <div class="settings" id="settings"></div>
+    </section>
+  </main>
+
+  <div class="toast hidden" id="toast"></div>
+
+  <div class="modal hidden" id="setup">
+    <div class="modal-box">
+      <header class="modal-head">
+        <h2 id="setup-title">硬件检测与初始化</h2>
+        <button class="modal-close" id="setup-close" title="关闭">✕</button>
+      </header>
+      <div class="modal-body" id="setup-body"></div>
+      <footer class="modal-foot">
+        <span class="modal-note" id="setup-note"></span>
+        <button class="btn ghost" id="setup-select-detected">只选有风扇的</button>
+        <button class="btn ghost" id="setup-probe" title="逐个通道全速试转，识别停转的风扇">主动检测</button>
+        <button class="btn primary" id="setup-apply">应用并保存</button>
+      </footer>
+    </div>
+  </div>
+
+  <script src="__FC_BASE__app.js"></script>
+</body>
+</html>

@@ -1,0 +1,356 @@
+<div align="center">
+
+# fn-fancontrol · 飞牛 NAS 风扇控制
+
+**按 CPU / 显卡 / 硬盘温度自动调节机箱与 CPU 风扇转速**
+
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-x86-lightgrey.svg)](#兼容性)
+[![fnOS](https://img.shields.io/badge/fnOS-%E2%89%A51.1.3100-green.svg)](https://www.fnnas.com/)
+[![Version](https://img.shields.io/badge/version-1.3.0-orange.svg)](CHANGELOG.md)
+
+[简体中文](README.md) · [English](README.en.md)
+
+</div>
+
+---
+
+## 为什么做这个
+
+成品 NAS 的风扇策略通常只有「静音 / 均衡 / 全速」三档，而且**只看 CPU 温度**。
+
+但 NAS 里最怕热的恰恰不是 CPU，是硬盘：WD 官方建议硬盘长期工作温度低于 50 °C，
+而很多机器在 CPU 闲逛的时候，硬盘已经悄悄爬到 55 °C 了 —— 因为机箱风扇压根没考虑硬盘。
+
+这个应用让你**用硬盘温度驱动机箱风扇**，同时 CPU 风扇照常跟 CPU 走，
+两条曲线互不干扰。设计思路参考了 [FanControl](https://github.com/Rem0o/FanControl.Releases)，
+但刻意只保留最核心的部分：**温度源 + 控温曲线 + 配置持久化**，不做过度设计。
+
+## 功能特性
+
+| | |
+|---|---|
+| 🌡️ **三种温度源** | CPU（coretemp / k10temp / PECI）、显卡（amdgpu / i915 / xe / nouveau / nvidia-smi）、硬盘（drivetemp / nvme / smartctl 兜底） |
+| 🔍 **硬件自检向导** | 首次启动自动列出控制器暴露的**全部** PWM 通道、实际转速与 BIOS 绑定的温度源，可逐个通道全速试转识别停转的风扇 |
+| 📈 **可视化曲线** | 每个风扇一条独立曲线，网页上直接拖动节点调整，支持 2–8 个节点 |
+| 🎛️ **多种模式** | 温度曲线 / 固定转速 / BIOS 自动，逐风扇独立设置 |
+| 🔀 **多源取最高** | 一个风扇可绑定多个温度源，取其中的最高值（例如机箱风扇同时看硬盘和 CPU） |
+| 🐢 **温度迟滞** | 降温超过设定幅度才允许降速，避免风扇反复变速的噪音 |
+| 💾 **硬盘友好** | 硬盘温度单独设置较长轮询间隔，减少唤醒休眠硬盘；smartctl 路径使用 `-n standby` 绝不唤醒 |
+| 🛡️ **失效保护** | 温度源全部失效时风扇升到设定的保护占空比，界面同时告警 |
+| ↩️ **安全交还** | 停止 / 卸载应用时自动把风扇交还主板 BIOS；从配置里移除某个风扇时，该通道精确恢复成接管前的状态 |
+| 🪶 **零依赖** | 后端纯 Python 3 标准库，前端原生 JS 无构建步骤，不需要 nodejs / python312 运行时应用 |
+
+## 界面
+
+> 📷 *截图待补充 —— 如果你愿意贡献截图，欢迎提 PR。*
+
+<!--
+把截图放到 docs/screenshots/ 后替换成：
+![总览](docs/screenshots/overview.png)
+![曲线编辑](docs/screenshots/curve.png)
+-->
+
+主界面分三块：
+
+- **温度源** —— 三个开关（CPU / 显卡 / 硬盘），硬盘可单独勾选参与调速的盘，实时显示各自温度
+- **风扇** —— 每个通道一张卡片：转速、占空比、依据温度、模式、温度源、最低/最高占空比、可拖动的曲线图
+- **全局设置** —— 控制周期、硬盘轮询间隔、温度迟滞、失效保护占空比
+
+## 安装
+
+### 前置条件
+
+- 飞牛 fnOS（`os_min_version ≥ 1.1.3100`，实测于 `1.2.0604`）
+- x86 主板，风扇挂在本项目支持的控制器上（见 [兼容性](#兼容性)）
+- 需要**管理员**账号安装（第三方应用安装本身要求管理员）
+
+### 从 Release 安装
+
+1. 到 [Releases](../../releases) 下载 `fn-fancontrol-<版本>.fpk`（或直接用仓库 `dist/` 里的文件）
+2. 飞牛 **应用中心 → 手动安装**，选择该 `.fpk`，选一个存储空间
+3. 安装完成后打开 **风扇控制**
+
+也可以走命令行：
+
+```bash
+sudo appcenter-cli install-fpk fn-fancontrol-1.2.0.fpk -v 3   # -v 是存储空间序号
+sudo appcenter-cli start fn-fancontrol
+```
+
+> ⚠️ 实测 `appcenter-cli install-fpk` 对**已安装的同名应用不会执行升级**，
+> 更新版本需要先 `uninstall` 再装（或用应用中心界面的升级入口）。
+> 卸载不会删除 `config.json`，重装后曲线配置照旧。
+
+## 使用
+
+打开应用后：
+
+1. **确认温度源** —— 硬盘那一栏会列出所有能被读到温度的盘，取消勾选不想参与调速的
+2. **确认接头归属** —— 首次安装会按主板 BIOS 的配置自动推断（跟 CPU 核心温度的判为 CPU 风扇，
+   其余判为机箱风扇），但**建议核对一下**哪张卡片对应哪个物理接头：给 CPU 加压或用 `stress-ng`，
+   看哪个风扇转速跟着动
+3. **调曲线** —— 拖动圆点，双击空白处加节点，右键节点删除
+4. **点击保存** —— 配置立即生效并落盘
+
+> 💡 **推荐起步配置**：机箱风扇绑 `硬盘`，CPU 风扇绑 `CPU`。
+> 硬盘曲线可以设成 `40°C → 30%`、`48°C → 60%`、`55°C → 100%`。
+
+## 兼容性
+
+能不能用，取决于**风扇挂在哪颗控制器上，以及它的内核驱动有没有被适配**。
+各驱动家族的 `pwm_enable` 语义**并不相同**（写错值可能把风扇控制整个关掉），
+所以每个家族都有独立配置，数值全部取自内核文档 `Documentation/hwmon/*.rst`：
+
+| 控制器家族 | 内核驱动 | 手动 | 自动 | 状态 |
+| --- | --- | :---: | :---: | --- |
+| Nuvoton NCT6775 / 6776 / 6779 / 679x / 6106 | `nct6775` | `1` | `5` Smart Fan IV | ✅ 已实测 |
+| ITE IT87xx（IT8603E … IT87952E 全系） | `it87` | `1` | `2` ※ | ✅ 已适配 |
+| Fintek F718xx / F8000 / F81865F | `f71882fg` | `1` | `2` | ✅ 已适配 |
+| Fintek F71805F / F71872F | `f71805f` | `1` | `2` | ✅ 已适配 |
+| Winbond W83627EHF / DHG / UHG / W83667HG | `w83627ehf` | `1` | `2` | ✅ 已适配 |
+| Winbond W83627HF / THF / W83697HF | `w83627hf` | `1` | `2` | ✅ 已适配 |
+| SMSC SCH5627 / SCH5636 | `sch5627` / `sch5636` | `1` | `2` | ✅ 已适配 |
+| **Nuvoton NCT6683 / 6686 / 6687** | `nct6683` | — | — | ⚠️ **仅监控** |
+| 其它带 `pwmN` 的 hwmon 节点 | 任意 | `1` | `2` | ⚠️ 通用兜底，未验证 |
+| ACPI `PNP0C0B` 风扇对象 | — | — | — | ❌ DSDT 空壳 |
+| 风扇由 EC 管理（笔记本 / 部分迷你主机） | — | — | — | ❌ 没有 pwm 节点 |
+
+> 除 NCT6775 家族外，其余家族是按内核文档适配的，**尚未在真实硬件上验证**。
+> 如果你有 ITE / Fintek / Winbond 的机器，非常欢迎反馈结果（见[贡献](#贡献)）。
+
+本项目的开发与实测环境：
+
+```
+主板   ASUSTeK TUF B365M-PLUS GAMING (B365, LGA1151)
+CPU    Intel CC150  8C/16T
+芯片   Nuvoton NCT6796D @ 0x2e:0x290
+控制器 6 路 PWM，其中 2 路接有风扇
+系统   飞牛 fnOS 1.2.0604 / 内核 6.18.18.c1032-trim
+```
+
+### 两个值得知道的坑
+
+**① ITE 的自动模式只对老芯片有效。** `it87` 驱动的 “Smart Guardian” 仅实现了
+IT8705F ≤ rev F、IT8712F ≤ rev G，新芯片写 `2` 会被驱动拒绝。应用对此的处理是
+逐级回退：先恢复接管前记录的状态 → 再试驱动自动模式 → 都不行就**直接给全速**。
+最后这一条很关键：没有它，一块不支持自动模式的 ITE 主板上「停止应用」会把风扇
+永久留在最后一次写入的低占空比上。
+
+**② ITE 主板常需要额外一步。** `it87` 驱动可能因 ACPI 已占用 SuperIO 的 I/O 端口
+而拒绝接管，`dmesg` 里会看到 `ACPI: resource conflict`：
+
+```bash
+sudo modprobe it87 ignore_resource_conflict=1   # 只影响该驱动，风险相对小
+# 或在内核启动参数加 acpi_enforce_resources=lax（影响面更大）
+```
+
+**NCT6683 / 6686 / 6687 为什么只读**：内核 `nct6683` 驱动的文档明确写着，Intel EC
+固件的寄存器布局与 Nuvoton 数据手册不符，**从操作系统写入任何值都被视为风险过高
+而禁用**（驱动根本不导出可写的 `pwmN`）。这类主板（ASRock B650/X670E、MSI B550/X670
+等）应用会识别出控制器并如实告诉你只能监控。
+
+## 从源码构建
+
+需要飞牛官方的打包工具 `fnpack`（随 fnOS 提供，位于 `/usr/local/bin/fnpack`）。
+
+```bash
+git clone https://github.com/LiuFudi/fn-fancontrol.git
+cd fn-fancontrol
+./build-fpk.sh                     # 产出 dist/fn-fancontrol-<版本>.fpk
+```
+
+`build-fpk.sh` 会：
+
+1. 从 `package/manifest` 读取 `appname` 与 `version`
+2. 校验 `app/server/fancontrold.py` 里的 `VERSION` 常量与 manifest 一致（不一致会告警）
+3. 调用 `fnpack build`，把产物重命名为 **`<appname>-<version>.fpk`** 放进 `dist/`
+4. 反向校验成品内 manifest 的版本与文件名一致
+5. 清理历史遗留的无版本号产物，但保留其它版本的产物
+
+图标可以重新生成（纯 Python，无第三方依赖）：
+
+```bash
+python3 tools/make_icons.py
+```
+
+## 工作原理
+
+```
+浏览器 iframe
+   └─ 飞牛统一网关 /app/fn-fancontrol   ← 校验登录态 + 转发 X-Trim-Isadmin
+        └─ Unix socket  package/target/app.sock   ← 不监听任何 TCP 端口
+             └─ fancontrold.py (以 root 运行)
+                  ├─ 控制循环线程：读温度 → 曲线插值 → 写 /sys/class/hwmon/*/pwmN
+                  └─ HTTP 线程：静态页面 + /api/*
+```
+
+**控制循环**每 `interval` 秒执行一次：读取启用的温度源 → 对每个风扇取其绑定源中的最高温 →
+代入曲线做线性插值得到百分比 → 按 `min_duty` / `max_duty` 夹取为 0–255 的占空比 →
+仅在数值变化时才写 `pwmN`。降速前还要通过温度迟滞检查。
+
+**为什么必须是 root**：写 `/sys/class/hwmon/*/pwm*`（`0644 root:root`）、
+`modprobe nct6775`、以及读硬盘 SMART 都需要 root。这段权限属于**应用**而不是用户 ——
+装一次之后守护进程常驻 root，日常调节只看网页，不需要 sudo、不需要命令行。
+
+## 配置
+
+配置以 JSON 保存在应用配置目录（`/volN/@appconf/fn-fancontrol/config.json`），
+界面保存时原子写入。手工编辑也会在下次保存时被服务端规范化。
+
+```jsonc
+{
+  "version": 1,
+  "enabled": true,          // 总开关；false 时全部交还 BIOS
+  "interval": 3,            // 控制周期（秒）
+  "hdd_interval": 60,       // 硬盘温度读取间隔（秒），调大可减少唤醒休眠硬盘
+  "hysteresis": 3,          // 温度迟滞（°C）
+  "fail_safe_duty": 255,    // 所有温度源失效时的占空比
+  "sources": {
+    "cpu": true,
+    "gpu": false,
+    "hdd": true,
+    "hdd_devices": []       // 空数组 = 使用全部硬盘中的最高温度
+  },
+  "fans": [
+    {
+      "channel": 2,         // SuperIO 通道号
+      "name": "CPU_FAN",
+      "mode": "curve",      // curve | manual | auto
+      "source": ["cpu"],    // 可多选，取最高温
+      "points": [[30, 20], [45, 35], [60, 60], [75, 100]],   // [温度°C, 占空比%]
+      "min_duty": 60,
+      "max_duty": 255,
+      "manual_duty": 128
+    }
+  ]
+}
+```
+
+## HTTP 接口
+
+服务通过 Unix socket 暴露一个小 JSON API，由飞牛网关鉴权后转发：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/ping` | 存活探测 |
+| GET | `/api/status` | 温度源、风扇实时状态、当前配置 |
+| GET | `/api/config` | 仅配置 |
+| GET | `/api/hardware` | 探测到的 SuperIO 通道与硬盘清单 |
+| POST | `/api/config` | 校验 → 原子落盘 → 立即生效 |
+| POST | `/api/action` | `{"action":"restore-auto"}` / `{"action":"refresh-hardware"}` |
+
+守护进程另有独立子命令，便于排错（均需 root）：
+
+```bash
+python3 package/app/server/fancontrold.py status      --appdest <dir> --etc <dir>
+python3 package/app/server/fancontrold.py init-config --appdest <dir> --etc <dir> [--force]
+python3 package/app/server/fancontrold.py restore     --appdest <dir> --etc <dir>
+python3 package/app/server/fancontrold.py run --host 127.0.0.1 --port 8099   # 本地调试
+```
+
+## 安全设计
+
+| 场景 | 行为 |
+|---|---|
+| 停止 / 卸载应用 | 守护进程退出前把它**实际驱动过**的通道写回 `pwmN_enable=5`（BIOS 自动）；从未管理过的通道保持原样不动 |
+| 守护进程被强杀 | `cmd/main` 检测到需要 `kill -9` 时兜底执行全量 `restore` |
+| 从配置移除风扇 | 该通道立即恢复成**接管前记录的状态**（enable + duty 一并还原） |
+| 温度源全部失效 | 升到 `fail_safe_duty`（默认全速），界面告警 |
+| 非管理员访问 | 服务端校验网关注入的 `X-Trim-Isadmin`，为假或缺失一律 `403`（fail-closed） |
+| 本机其它账号 | 应用 socket 为 `0600 root:root`，无法绕过网关直连；访问控制交还飞牛登录态 |
+| 路径穿越 | 静态文件服务对目标路径做 `realpath` 边界校验 |
+
+## 常见问题
+
+<details>
+<summary><b>界面提示「未找到风扇控制器」</b></summary>
+
+先确认驱动是否加载成功：
+
+```bash
+sudo modprobe nct6775
+dmesg | grep -iE "nct|it87|f718|w836|sch56"   # 芯片有没有被识别
+cat /sys/class/hwmon/*/name                    # 驱动注册了哪些节点
+ls /sys/class/hwmon/*/name | xargs cat | grep -i nct
+```
+
+如果 `dmesg` 里出现 `ACPI: resource conflict`，说明 ACPI 占用了 SuperIO 的
+I/O 端口，需要在启动参数里加 `acpi_enforce_resources=lax` 后重启。
+
+如果界面**点名列出了某个芯片**，说明它已被识别但没有可用的写入通道，见 [兼容性](#兼容性)。
+</details>
+
+<details>
+<summary><b>能读到转速，但改 PWM 没反应</b></summary>
+
+该通道可能处于自动模式且驱动不接受改写，或 BIOS 锁定了风扇控制。
+可以先在界面上把该风扇的模式切到「温度曲线」，再看占空比数值是否变化。
+</details>
+
+<details>
+<summary><b><code>pwmN_enable</code> 回读值和写入值不一致</b></summary>
+
+已知的驱动行为差异。在 NCT6796D 上写入 `1`（手动）会读回 `0`。
+本应用因此**不依赖回读值判断模式**，而是自行记录已下发的模式，
+界面上显示的是应用自己的有效模式。
+</details>
+
+<details>
+<summary><b>有 4 针风扇但转速为 0</b></summary>
+
+该接头没插风扇，或者风扇没有测速线。默认配置只包含有转速读数的通道，
+如果某个风扇当前停转导致被漏判，可以在界面底部用「添加该通道」手动加回，
+不想要时点卡片上的「移除」即可。
+</details>
+
+<details>
+<summary><b>担心硬盘被频繁唤醒</b></summary>
+
+把「全局设置 → 硬盘温度读取间隔」调大（例如 300 秒）。
+另外若硬盘能走 `drivetemp` / `nvme` 内核驱动，走的是纯 sysfs 读取；
+只有没有 hwmon 节点的盘才会退回 `smartctl -n standby`，该参数保证不会唤醒休眠盘。
+</details>
+
+## 目录结构
+
+```
+fn-fancontrol/
+├── LICENSE                   MIT
+├── README.md / README.en.md
+├── CHANGELOG.md
+├── build-fpk.sh              构建 + 版本化命名
+├── package/                  fnpack 源码树（会被打包进 fpk）
+│   ├── manifest
+│   ├── ICON.PNG / ICON_256.PNG
+│   ├── app/
+│   │   ├── server/           守护进程（纯标准库）
+│   │   │   ├── fancontrold.py    控制循环 + HTTP API + 静态页面
+│   │   │   ├── fanhardware.py    SuperIO / hwmon / 温度源
+│   │   │   └── fanconfig.py      配置校验 + 曲线插值
+│   │   └── ui/               前端（原生 JS）
+│   ├── cmd/                  生命周期脚本
+│   └── config/               privilege / resource
+├── tools/make_icons.py       纯 Python 图标生成
+└── dist/                     构建产物
+```
+
+## 贡献
+
+欢迎 Issue 和 PR，尤其是：
+
+- **硬件适配** —— 如果你有 ITE / Fintek / 其它 SuperIO 的机器，欢迎提供
+  `dmesg`、`ls /sys/class/hwmon/*/name`、`sensors` 输出，一起评估适配
+- **截图** —— 界面截图会让 README 完整很多
+- **英文文档校对** —— `README.en.md` 欢迎润色
+
+## 免责声明
+
+本软件直接读写主板 SuperIO 的 PWM 寄存器。作者已尽力保证安全设计
+（失效保护、停止即交还 BIOS、最低占空比限制），但**因使用本软件导致的任何
+硬件损坏或数据损失，作者不承担责任**。请自行评估风险，尤其是首次在非验证过的
+主板上使用时。
+
+## 许可证
+
+[MIT License](LICENSE) © 2026 [LiuFudi](https://github.com/LiuFudi)

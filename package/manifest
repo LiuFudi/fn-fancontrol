@@ -1,0 +1,16 @@
+appname               = fn-fancontrol
+version = 1.3.0
+display_name          = 风扇控制
+desc                  = 为飞牛 NAS 提供基于温度曲线的风扇调速。<br /><br /><strong>温度源</strong><br />可选择 CPU、显卡、硬盘（SATA / NVMe）作为调速依据，支持多源取最高值。<br /><br /><strong>控温曲线</strong><br />每个风扇独立配置温度-转速曲线，支持最低 / 最高占空比限制与温度迟滞，避免风扇频繁变速。<br /><br /><strong>硬件支持</strong><br />通过内核 <code>nct6775</code> 驱动读写 Nuvoton NCT6775 / 6776 / 6779 / 6791 / 6792 / 6793 / 6795 / 6796 / 6797 / 6798 系列 SuperIO 芯片，这是绝大多数 x86 NAS 主板的风扇控制芯片。<br /><br /><strong>安全设计</strong><br />1. 停止或卸载应用时，本应用实际管理过的风扇自动交还主板 BIOS 自动控制，从未接管的接头保持原样不动。<br />2. 从配置中移除某个风扇时，该接头恢复成接管前的状态。<br />3. 温度源全部失效时风扇升至全速保护。<br />4. 每个风扇可设置最低占空比，防止停转。<br /><br /><strong>说明</strong><br />本应用需要 root 权限以读写 <code>/sys/class/hwmon</code> 并加载内核模块。仅管理员可访问，服务端会校验飞牛网关注入的管理员标识。<br /><br />开源地址：https://github.com/LiuFudi/fn-fancontrol （MIT License）
+changelog = 1.3.0 支持更多风扇控制器：新增 ITE IT87xx、Fintek F718xx/F8000、Winbond W83627EHF 等驱动家族的适配（各自的 pwm_enable 语义按内核文档区分，不再假定 NCT6775 的写法）；Nuvoton NCT6683/6686/6687 会被识别但标记为仅监控（内核驱动禁用了该芯片的 PWM 写入）。新增首次启动的硬件初始化向导：自动列出控制器暴露的全部 PWM 通道、实际转速与 BIOS 绑定的温度源，支持逐个通道全速试转以识别停转的风扇，由用户确认要纳管的通道。<br />1.2.0 修复风扇通道无法移除的问题：风扇卡片新增“移除”按钮；移除后该通道恢复成接管前的 BIOS 状态（enable 与 duty 一并还原），不再遗留在手动占空比上。同时停止应用时只还原本应用实际管理过的通道，不再改写 BIOS 设为手动档的空接头。<br />1.1.0 安全加固：网关 socket 权限收紧为仅 root 可访问；服务端新增管理员校验。<br />1.0.0 首个版本：CPU / 显卡 / 硬盘温度源、曲线调速、配置持久化、Web 界面。
+platform              = x86
+source                = thirdparty
+maintainer            = LiuFudi
+maintainer_url        = https://github.com/LiuFudi
+distributor           = LiuFudi
+distributor_url       = https://github.com/LiuFudi/fn-fancontrol
+desktop_uidir         = ui
+desktop_applaunchname = fn-fancontrol.Application
+ctl_stop              = true
+checkport             = false
+os_min_version        = 1.1.3100

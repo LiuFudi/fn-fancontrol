@@ -1,2 +1,12 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Normalise line endings so the package behaves the same on every checkout.
+* text=auto eol=lf
+
+# The lifecycle scripts and the shell helper are executed on the NAS, where a
+# stray CR would break the shebang.
+package/cmd/* text eol=lf
+*.sh            text eol=lf
+
+# Binary artifacts must never be touched.
+*.fpk binary
+*.png binary
+*.tgz binary

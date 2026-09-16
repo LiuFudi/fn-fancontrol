@@ -1,0 +1,4 @@
+#!/bin/bash
+# Configuration changes are applied live through the web UI; the daemon reloads
+# its config on every start, so there is nothing to do here.
+exit 0
