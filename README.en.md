@@ -33,7 +33,7 @@ essentials: **temperature sources + control curves + persisted configuration**.
 
 | | |
 |---|---|
-| 🌡️ **Three source types** | CPU (coretemp / k10temp / PECI), GPU (amdgpu / i915 / xe / nouveau / nvidia-smi), disks (drivetemp / nvme, `smartctl` fallback) |
+| 🌡️ **Whole-machine coverage** | CPU (coretemp / k10temp / PECI), GPU (amdgpu / i915 / xe / nouveau / nvidia-smi), disks (drivetemp / nvme, `smartctl` fallback), plus motherboard (SYSTIN / CPUTIN / T_SENSOR), memory (jc42 / spd5118) and ACPI thermal zones — **each with its own switch** |
 | 🔍 **Hardware wizard** | On first launch it lists **every** PWM channel the controller exposes, with live RPM and the temperature source the BIOS bound to it; a spin-up probe finds fans that were stopped |
 | ⏬ **Calibration includes 0 %** | Calibration drives the fan down to 0 %, so it also reveals whether the fan supports stopping; the result is stored and shown again next time |
 | 💽 **Disks selected by identity, not position** | Disks are identified by model + serial (`/dev/disk/by-id`) rather than `sda`/`sdb`, so re-cabling or changing the boot order keeps the selection on the same physical drive |
@@ -412,16 +412,14 @@ yourself, especially on a board that has not been verified.
 
 ## Supporting the project
 
-The UI has a small ❤ entry in the top bar (it can be switched off in the config). It is
-**purely local**:
+The UI has a small ❤ entry in the top bar. It is **purely local**:
 
-- the QR codes and text come from `app/ui/donate.json` — no network access, no reporting,
+- the wording comes from `app/ui/donate.json` — no network access, no reporting,
   no click tracking;
 - donating is entirely optional and **never changes any behaviour** of the software.
 
-If you build and ship your own copy, replace `app/ui/images/donate-wechat.png` and
-`donate-alipay.png` with your own codes, or set `"enabled": false` in `donate.json` to
-hide the entry completely.
+The entry is **always visible** — there is no switch to turn it off. It is a single small
+button: it never pops up on its own and never interrupts anything you are doing.
 
 ## License
 

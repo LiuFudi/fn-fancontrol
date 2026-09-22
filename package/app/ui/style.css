@@ -97,6 +97,11 @@ html, body {
 .btn.ghost { background: transparent; }
 .btn[disabled] { opacity: .5; cursor: not-allowed; }
 
+/* The donation entry is a permanent part of the top bar, shown in red so it
+   reads as a separate thing from the fan controls next to it. */
+.btn.donate { color: var(--err); border-color: color-mix(in srgb, var(--err) 38%, var(--line)); }
+.btn.donate:hover { background: color-mix(in srgb, var(--err) 8%, transparent); border-color: var(--err); }
+
 .switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
 .switch input { display: none; }
 .switch .track {

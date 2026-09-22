@@ -20,6 +20,11 @@ CONFIG_VERSION = 1
 #: per GPU instead of a single "gpu" toggle plus a redundant device list.
 SOURCE_KEYS = ("cpu", "hdd")
 GPU_PREFIX = "gpu:"
+#: Motherboard, DIMM and other extra sensors from fanhardware.list_aux_sensors().
+#: Unlike GPUs these are not filtered against the sensors present right now: a
+#: key left behind by a sensor that has gone away simply never matches anything,
+#: so it is inert rather than wrong.
+AUX_PREFIX = "aux:"
 MODES = ("curve", "manual", "auto")
 
 #: Fallback curve: quiet when cool, full speed well before the CPU is unhappy.
@@ -41,6 +46,7 @@ DEFAULT_CONFIG = {
     "sources": {
         "cpu": True,
         "gpus": {},
+        "aux": {},
         "hdd": True,
         "hdd_devices": [],
 
@@ -172,6 +178,9 @@ def _clean_sources(raw, gpu_keys=None):
         elif key.startswith(GPU_PREFIX):
             if key not in picked:
                 picked.append(key)
+        elif key.startswith(AUX_PREFIX):
+            if key not in picked:
+                picked.append(key)
         elif key == "gpu":
             if gpu_keys is None:
                 if "gpu" not in picked:
@@ -220,6 +229,18 @@ def normalise(config, channels=None, gpu_keys=None):
             # drop entries for GPUs that are no longer present
             gpus = {k: v for k, v in gpus.items() if k in gpu_keys}
         cfg["sources"]["gpus"] = gpus
+
+        # Extra sensors (motherboard, DIMMs, ACPI zones, ...): one switch each,
+        # off by default because most machines have far more inputs than
+        # anything actually wired to them.
+        aux = {}
+        raw_aux = sources.get("aux")
+        if isinstance(raw_aux, dict):
+            for key, value in raw_aux.items():
+                key = str(key)
+                if key.startswith(AUX_PREFIX):
+                    aux[key] = bool(value)
+        cfg["sources"]["aux"] = aux
 
     known = {channel.index for channel in channels} if channels else None
     fans = []

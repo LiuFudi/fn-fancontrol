@@ -912,6 +912,146 @@ def read_gpu(sensors=None, selected=None):
     return value, "%s @ %.0fC, %d GPU(s)" % (label, value, len(readings))
 
 
+# -- auxiliary sensors: motherboard, DIMMs, ACPI zones, everything else ------ #
+
+#: Chips whose temperatures already have a dedicated source, so the auxiliary
+#: list must not offer the same reading a second time.
+CLAIMED_DRIVERS = set(CPU_DRIVERS) | set(GPU_DRIVERS) | set(DISK_DRIVERS)
+
+#: DIMM temperature sensors: DDR4 through jc42, DDR5 through spd5118.
+DIMM_DRIVERS = ("jc42", "spd5118")
+
+#: A thermistor input with nothing attached reads near the top of its scale --
+#: an NCT6796D with empty AUXTIN0-3 sits at 111-115 C.  Nothing on a board
+#: legitimately idles there, and letting one through would pin every fan at full
+#: speed, so such inputs are left out instead of offered as a source.
+AUX_MAX_PLAUSIBLE_C = 105.0
+
+#: Labels that mark a SuperIO input as "somewhere on the board".
+BOARD_LABELS = ("systin", "cputin", "mb", "motherboard", "mainboard", "board",
+                "t_sensor", "tsensor", "system", "vrm", "chipset")
+
+#: Inputs that repeat what the CPU source already reports -- PECI is the CPU
+#: package through the SuperIO, and the calibration twin is the same sensor
+#: again.  Offering them here would only add duplicates to the source list.
+SKIP_LABELS = ("peci", "calibration", "package", "tctl", "tdie")
+
+#: Display order of the kinds, and the heading each one reads as.
+AUX_KIND_ORDER = ("board", "dimm", "other")
+
+_I2C_ADDRESS = re.compile(r"/(\d+-[0-9a-f]{4})$")
+
+
+class AuxSensor:
+    """An extra hwmon temperature input usable as a control source."""
+
+    def __init__(self, ident, path, chip, kind, label):
+        self.id = ident
+        self.path = path
+        self.chip = chip
+        self.kind = kind          # "board" | "dimm" | "other"
+        self.label = label
+        self.current = None
+
+    def temperature(self):
+        raw = read_int(self.path)
+        value = None if raw is None or raw <= 0 else raw / 1000.0
+        if value is not None and value > AUX_MAX_PLAUSIBLE_C:
+            value = None          # nothing attached to this input
+        self.current = value
+        return value
+
+    def as_dict(self):
+        return {
+            "id": self.id,
+            "chip": self.chip,
+            "kind": self.kind,
+            "label": self.label,
+            "temperature": self.current,
+        }
+
+
+def _chip_instance(hwmon_path, name):
+    """Disambiguate chips that appear once per device (one jc42 per DIMM)."""
+    device = os.path.realpath(os.path.join(hwmon_path, "device"))
+    match = _I2C_ADDRESS.search(device)
+    return "%s@%s" % (name, match.group(1)) if match else name
+
+
+def _aux_kind(chip, label, hwmon_path):
+    if chip in DIMM_DRIVERS:
+        return "dimm"
+    if has_pwm_attribute(hwmon_path):
+        return "board"        # the SuperIO whose fans we already drive
+    if any(token in (label or "").lower() for token in BOARD_LABELS):
+        return "board"
+    return "other"
+
+
+def _aux_label(chip, kind, label, index):
+    name = (label or "").strip()
+    if kind == "dimm":
+        return "内存 %s" % (name or "DIMM")
+    if kind == "board":
+        return "主板 %s" % (name or ("temp%d" % index))
+    if chip == "acpitz":
+        return "ACPI 热区%d" % index
+    return "%s %s" % (chip, name or ("temp%d" % index))
+
+
+def list_aux_sensors():
+    """Motherboard, DIMM and other leftover hwmon temperature inputs.
+
+    Everything no dedicated source already covers, minus the inputs that read
+    absurd values.  Each becomes its own switchable source, so the user picks
+    whatever is actually wired up on their particular board.
+    """
+    found = []
+    for path, chip in hwmon_nodes():
+        if chip in CLAIMED_DRIVERS:
+            continue
+        instance = _chip_instance(path, chip)
+        for input_path in glob.glob(os.path.join(path, "temp*_input")):
+            base = os.path.basename(input_path)[: -len("_input")]
+            try:
+                index = int(base[len("temp"):])
+            except ValueError:
+                continue
+            raw = read_int(input_path)
+            if raw is None or raw <= 0 or raw / 1000.0 > AUX_MAX_PLAUSIBLE_C:
+                continue          # nothing attached to this input
+            label = (read_text(os.path.join(path, base + "_label")) or "").strip()
+            folded = label.lower()
+            if any(token in folded for token in SKIP_LABELS):
+                continue          # the CPU source already reports this one
+            kind = _aux_kind(chip, label, path)
+            found.append((
+                AUX_KIND_ORDER.index(kind), chip, index,
+                AuxSensor("%s:%s" % (instance, base), input_path, chip, kind,
+                          _aux_label(chip, kind, label, index)),
+            ))
+    found.sort(key=lambda entry: entry[:3])
+    return [entry[3] for entry in found]
+
+
+def read_aux(sensors=None, selected=None):
+    """Hottest selected auxiliary sensor plus a short description."""
+    sensors = list_aux_sensors() if sensors is None else sensors
+    readings = []
+    for sensor in sensors:
+        if selected and sensor.id not in selected:
+            continue
+        value = sensor.temperature()
+        if value is not None:
+            readings.append((value, sensor.label or sensor.id))
+    if not readings:
+        return None, None
+    value, label = max(readings)
+    if len(readings) == 1:
+        return value, label
+    return value, "%s @ %.0fC, %d sensor(s)" % (label, value, len(readings))
+
+
 # -- disks ------------------------------------------------------------------ #
 
 

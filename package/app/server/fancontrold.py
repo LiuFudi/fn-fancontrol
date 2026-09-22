@@ -44,7 +44,7 @@ import fanhardware  # noqa: E402
 APP_NAME = "fn-fancontrol"
 # Must be kept in step with the ``version`` field of the package manifest:
 # the app center does not export TRIM_APPVER to the daemon.
-VERSION = "1.10.0"
+VERSION = "1.10.2"
 
 MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -103,10 +103,12 @@ class Controller:
         self.original = {}      # channel -> (enable, duty) before we touched it
         self.mode_at = {}       # channel -> when manual mode was last asserted
         self.probe_results = {} # channel -> latest calibration result
-        # keyed by source key: "cpu", "hdd", and one "gpu:<id>" per GPU
+        # keyed by source key: "cpu", "hdd", one "gpu:<id>" per GPU and one
+        # "aux:<chip>:<tempN>" per extra sensor
         self.sources = {}
         self.disks = []
         self.gpus = []
+        self.aux = []
         self.hdd_read_at = 0.0
         self.degraded = False
         self.updated = 0.0
@@ -128,6 +130,11 @@ class Controller:
         """Source keys for the GPUs present on this machine."""
         return [fanconfig.GPU_PREFIX + gpu.id for gpu in self.gpus]
 
+    @property
+    def aux_keys(self):
+        """Source keys for the extra sensors present on this machine."""
+        return [fanconfig.AUX_PREFIX + sensor.id for sensor in self.aux]
+
     def refresh_hardware(self):
         """Re-scan hwmon; safe to call at any time."""
         loaded = fanhardware.ensure_modules(self.log)
@@ -142,6 +149,10 @@ class Controller:
             self.controllable = bool(profile and profile.controllable)
             self.disks = fanhardware.list_disk_sensors()
             self.gpus = fanhardware.list_gpu_sensors()
+            self.aux = fanhardware.list_aux_sensors()
+        if self.aux:
+            self.log("extra temperature sensor(s): %s"
+                     % ", ".join(sensor.label for sensor in self.aux))
         if not self.hardware_ready:
             self.log("no fan controller with a PWM channel was found")
         elif not self.controllable:
@@ -264,6 +275,7 @@ class Controller:
         with self.lock:
             config = self.config or fanconfig.DEFAULT_CONFIG
             gpus = list(self.gpus)
+            aux = list(self.aux)
         wanted = config["sources"]
         now = time.time()
 
@@ -279,6 +291,13 @@ class Controller:
             self.sources[key] = {
                 "temperature": gpu.temperature(),
                 "detail": gpu.label or gpu.id,
+            }
+
+        # Extra sensors are likewise read whether or not they are switched on.
+        for sensor in aux:
+            self.sources[fanconfig.AUX_PREFIX + sensor.id] = {
+                "temperature": sensor.temperature(),
+                "detail": sensor.label or sensor.id,
             }
 
         if not wanted.get("hdd"):
@@ -300,6 +319,8 @@ class Controller:
     def _source_enabled(key, wanted, gpu_switches):
         if key.startswith(fanconfig.GPU_PREFIX):
             return bool(gpu_switches.get(key, False))
+        if key.startswith(fanconfig.AUX_PREFIX):
+            return bool((wanted.get("aux") or {}).get(key, False))
         return bool(wanted.get(key))
 
     def _source_state(self):
@@ -311,12 +332,14 @@ class Controller:
         """
         with self.lock:
             gpus = list(self.gpus)
+            aux = list(self.aux)
             readings = {key: dict(info) for key, info in self.sources.items()}
             config = self.config or fanconfig.DEFAULT_CONFIG
         wanted = config["sources"]
         gpu_switches = wanted.get("gpus") or {}
 
-        keys = ["cpu"] + [fanconfig.GPU_PREFIX + g.id for g in gpus] + ["hdd"]
+        keys = (["cpu"] + [fanconfig.GPU_PREFIX + g.id for g in gpus] + ["hdd"]
+                + [fanconfig.AUX_PREFIX + s.id for s in aux])
         state = {}
         for key in keys:
             info = readings.get(key) or {"temperature": None, "detail": None}
@@ -613,6 +636,7 @@ class Controller:
         """
         with self.lock:
             gpus = list(self.gpus)
+            aux = list(self.aux)
         sources = self._source_state()
 
         items = []
@@ -634,6 +658,10 @@ class Controller:
             add(key, "gpu", label,
                 sources.get(key) or {"detail": gpu.label or gpu.id})
         add("hdd", "hdd", "硬盘", sources.get("hdd") or {})
+        for sensor in aux:
+            key = fanconfig.AUX_PREFIX + sensor.id
+            add(key, "aux", sensor.label or sensor.id,
+                sources.get(key) or {"detail": sensor.label or sensor.id})
         return items
 
     def status(self):
@@ -692,6 +720,7 @@ class Controller:
                 "source_list": self.source_list(),
                 "devices": [d.as_dict() for d in self.disks],
                 "gpus": [g.as_dict() for g in self.gpus],
+                "aux": [s.as_dict() for s in self.aux],
                 "fans": fans,
                 "config": config,
             }
@@ -701,6 +730,7 @@ class Controller:
             channels = [c.as_dict() for c in self.channels.values()]
             disks = [d.as_dict() for d in self.disks]
             gpus = [g.as_dict() for g in self.gpus]
+            aux = [s.as_dict() for s in self.aux]
             chip = self.chip
         return {
             "chip": chip,
@@ -708,6 +738,7 @@ class Controller:
             "channels": channels,
             "disks": disks,
             "gpus": gpus,
+            "aux": aux,
             "profiles": [p.as_dict() for p in fanhardware.PROFILES],
             "unsupported": fanhardware.detect_other_controllers(),
         }

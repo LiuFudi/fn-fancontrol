@@ -265,9 +265,14 @@ function renderSources() {
   $$('[data-src-toggle]').forEach((input) => {
     input.addEventListener('change', () => {
       const key = input.dataset.srcToggle;
+      // GPUs and extra sensors each keep their own map so that a card which is
+      // not present on this machine cannot be confused with one that is off.
       if (key.indexOf('gpu:') === 0) {
         if (!cfg.sources.gpus) cfg.sources.gpus = {};
         cfg.sources.gpus[key] = input.checked;
+      } else if (key.indexOf('aux:') === 0) {
+        if (!cfg.sources.aux) cfg.sources.aux = {};
+        cfg.sources.aux[key] = input.checked;
       } else {
         cfg.sources[key] = input.checked;
       }
@@ -960,34 +965,43 @@ $('#setup').addEventListener('click', (event) => {
 
 /* ----------------------------------------------------------------- donate -- */
 
-// Purely local: the configuration and the images are static files shipped with
-// the app.  Nothing is fetched from the network and no click is ever reported.
+// Purely local.  The wording comes from donate.json and the QR images are
+// compiled into donate-qr.js at build time, so the shipped app contains no
+// loose image file for them.  Nothing is fetched from the network and no click
+// is ever reported.
+//
+// The entry is a permanent part of the interface: it stays visible for as long
+// as the app is installed and is deliberately not something the end user can
+// switch off.
 let donate = null;
 
+//: Compiled-in QR images, keyed by the ids donate.json refers to.
+const DONATE_QR = window.FANCONTROL_DONATE_QR || {};
+
 async function loadDonate() {
-  const button = $('#btn-donate');
   try {
     const res = await fetch(ASSET + 'donate.json', { cache: 'no-store' });
     donate = res.ok ? await res.json() : null;
   } catch (err) {
     donate = null;
   }
-  if (!donate || donate.enabled === false) {
-    button.classList.add('hidden');   // no config, or switched off: stay invisible
-    return;
-  }
-  button.classList.remove('hidden');
+  syncDonate();
+}
+
+/** The entry itself never hides; only its contents depend on donate.json. */
+function syncDonate() {
+  $('#btn-donate').classList.remove('hidden');
   renderDonate();
 }
 
 function renderDonate() {
-  if (!donate || donate.enabled === false) return;
+  if (!donate) return;
   const body = $('#donate-body');
   $('#donate-title').textContent = donate.title || '支持作者';
 
   const qrs = (donate.qrcodes || []).map((qr) =>
     '<figure class="qr">' +
-      '<img data-qr="' + esc(qr.image) + '" alt="' + esc(qr.label) + '">' +
+      '<img data-qr="' + esc(qr.key) + '" alt="' + esc(qr.label) + '">' +
       '<figcaption>' + esc(qr.label) + '</figcaption>' +
     '</figure>').join('');
   const links = (donate.links || []).map((link) =>
@@ -1001,16 +1015,24 @@ function renderDonate() {
     (donate.note ? '<p class="curve-hint">' + esc(donate.note) + '</p>' : '');
 
   $$('.qr img', body).forEach((img) => {
-    img.addEventListener('error', () => {
+    const source = DONATE_QR[img.dataset.qr];
+    if (!source) {
       const missing = document.createElement('div');
       missing.className = 'qr-missing';
       missing.textContent = '图片缺失';
       img.replaceWith(missing);
-    });
-    img.src = ASSET + img.dataset.qr;
+      return;
+    }
+    img.src = source;
   });
 
 }
+
+$('#btn-donate').addEventListener('click', () => $('#donate').classList.remove('hidden'));
+$('#donate-close').addEventListener('click', () => $('#donate').classList.add('hidden'));
+$('#donate').addEventListener('click', (event) => {
+  if (event.target === $('#donate')) $('#donate').classList.add('hidden');
+});
 
 $('#btn-donate').addEventListener('click', () => $('#donate').classList.remove('hidden'));
 $('#donate-close').addEventListener('click', () => $('#donate').classList.add('hidden'));

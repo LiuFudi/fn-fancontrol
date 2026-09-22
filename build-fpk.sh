@@ -55,6 +55,17 @@ fi
 find "$SOURCE" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
 find "$SOURCE" -name '*.py[co]' -delete 2>/dev/null || true
 
+# The donation QR codes ship inlined as data URIs, so regenerate the module
+# rather than trusting a committed copy to still match assets/donate/.
+GENERATOR="$HERE/tools/make_donate_qr.py"
+if [ -f "$GENERATOR" ]; then
+    python3 "$GENERATOR" "$HERE"
+fi
+[ -f "$SOURCE/app/ui/donate-qr.js" ] || {
+    echo "build-fpk: app/ui/donate-qr.js is missing - run tools/make_donate_qr.py" >&2
+    exit 1
+}
+
 mkdir -p "$DIST"
 ARTIFACT="$DIST/${APPNAME}-${VERSION}.fpk"
 
