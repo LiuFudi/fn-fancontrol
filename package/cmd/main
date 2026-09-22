@@ -1,4 +1,10 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 LiuFudi
+#
+# This file is part of fn-fancontrol, licensed under the GNU General Public
+# License version 3 or (at your option) any later version.
+# See the LICENSE file for the full text.
 # fn-fancontrol lifecycle script: start / stop / status.
 #
 # Environment provided by the fnOS app center:
@@ -25,8 +31,24 @@ log_msg() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE" 2>/dev/null
 }
 
+# Verify that a PID really is *our* daemon.
+#
+# A PID file survives a reboot and the kernel re-uses PIDs freely, so checking
+# only `kill -0` made the app believe it was still running whenever some
+# unrelated process inherited its old PID.  It then never started again and the
+# gateway answered 502 Bad Gateway with no clue why.  Match on the command line
+# instead.
 check_process() {
-    [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null
+    local pid="${1:-}"
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    [ -r "/proc/$pid/cmdline" ] || return 1
+    tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF "$DAEMON"
+}
+
+# Any daemon process still alive, whether or not the PID file knows about it.
+leftover_pids() {
+    pgrep -f -- "$DAEMON" 2>/dev/null
 }
 
 running_pid() {
@@ -37,12 +59,18 @@ running_pid() {
         printf '%s' "$pid"
         return 0
     fi
+    if [ -n "$pid" ]; then
+        log_msg "clearing stale pid file: pid $pid is not our daemon"
+    fi
     rm -f "$PID_FILE"
     return 1
 }
 
+# "Running" has to mean "the gateway can actually reach it".  A live daemon
+# with a missing socket still looks healthy here while the UI shows 502.
 status() {
-    running_pid >/dev/null 2>&1
+    running_pid >/dev/null 2>&1 || return 1
+    [ -S "$SOCKET" ]
 }
 
 start_process() {
@@ -50,6 +78,15 @@ start_process() {
         log_msg "already running (pid $(running_pid))"
         return 0
     fi
+
+    # Never start a second daemon on top of a leftover one.  running_pid() only
+    # knows about the tracked PID, so sweep by command line as well.
+    local stray
+    for stray in $(leftover_pids); do
+        log_msg "stopping leftover daemon pid $stray before starting"
+        kill -TERM "$stray" 2>/dev/null
+    done
+    sleep 1
 
     if [ ! -r "$DAEMON" ]; then
         log_msg "ERROR: daemon not found at $DAEMON"
@@ -125,6 +162,13 @@ stop_process() {
 
     rm -f "$PID_FILE"
     rm -f "$SOCKET" 2>/dev/null
+
+    # Sweep anything the PID file did not know about.
+    local stray
+    for stray in $(leftover_pids); do
+        log_msg "stopping untracked daemon pid $stray"
+        kill -TERM "$stray" 2>/dev/null
+    done
 
     if [ "$forced" -eq 1 ]; then
         # The daemon got no chance to tidy up, so fall back to handing every

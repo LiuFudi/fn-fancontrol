@@ -1,12 +1,19 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 LiuFudi
+ *
+ * This file is part of fn-fancontrol, licensed under the GNU General Public
+ * License version 3 or (at your option) any later version.
+ * See the LICENSE file for the full text.
+ */
 'use strict';
 
 /* ------------------------------------------------------------------ setup -- */
 
 const BASE = window.FANCONTROL_BASE || '/';
 const API = BASE.replace(/\/+$/, '') + '/api/';
+const ASSET = BASE.endsWith('/') ? BASE : BASE + '/';
 const SVGNS = 'http://www.w3.org/2000/svg';
 
-const SOURCE_LABELS = { cpu: 'CPU', gpu: '显卡', hdd: '硬盘' };
 const MODE_LABELS = { curve: '温度曲线', manual: '固定转速', auto: 'BIOS 自动' };
 const CURVE = { X0: 38, X1: 332, Y0: 12, Y1: 156, TMIN: 20, TMAX: 100, W: 340, H: 190 };
 
@@ -88,7 +95,7 @@ function svgText(x, y, content, anchor, cls) {
   return node;
 }
 
-function drawCurve(svg, points, markerTemp) {
+function drawCurve(svg, points, markerTemp, operatingPercent) {
   const g = geometry();
   const c = CURVE;
   const pts = points.slice().sort((a, b) => a[0] - b[0]);
@@ -122,8 +129,17 @@ function drawCurve(svg, points, markerTemp) {
   if (markerTemp !== null && markerTemp !== undefined && isFinite(markerTemp)) {
     const x = g.xOf(markerTemp);
     nodes.push(svgEl('line', { class: 'curve-marker', x1: x, y1: c.Y0, x2: x, y2: c.Y1 }));
-    nodes.push(svgText(Math.min(x + 4, c.X1 - 26), c.Y0 + 9, Number(markerTemp).toFixed(0) + '°C',
-                       'start', 'curve-marker-text'));
+    let label = Number(markerTemp).toFixed(0) + '°C';
+    // Where the fan is actually running right now. Seeing this dot sitting far
+    // above what you expect is the quickest way to tell that the curve (not a
+    // bug) is what is asking for the speed.
+    if (operatingPercent !== null && operatingPercent !== undefined && isFinite(operatingPercent)) {
+      const oy = g.yOf(operatingPercent);
+      nodes.push(svgEl('line', { class: 'curve-op-line', x1: c.X0, y1: oy, x2: x, y2: oy }));
+      nodes.push(svgEl('circle', { class: 'curve-op', cx: x, cy: oy, r: 5.5 }));
+      label += ' · ' + Number(operatingPercent).toFixed(0) + '%';
+    }
+    nodes.push(svgText(Math.min(x + 5, c.X1 - 56), c.Y0 + 9, label, 'start', 'curve-marker-text'));
   }
 
   svg.replaceChildren.apply(svg, nodes);
@@ -141,7 +157,7 @@ function toSvg(svg, event) {
 function attachCurveEditor(svg, fan) {
   const g = geometry();
   let dragIndex = -1;
-  const redraw = () => drawCurve(svg, fan.points, liveTempFor(fan));
+  const redraw = () => drawCurve(svg, fan.points, liveTempFor(fan), livePercentFor(fan));
 
   svg.addEventListener('pointerdown', (event) => {
     const dot = event.target.closest ? event.target.closest('.curve-dot') : null;
@@ -199,38 +215,66 @@ function attachCurveEditor(svg, fan) {
 /* ------------------------------------------------------------ rendering -- */
 
 function liveTempFor(fan) {
-  const keys = fan.source || [];
   let best = null;
-  keys.forEach((key) => {
-    const value = status && status.sources && status.sources[key] ? status.sources[key].temperature : null;
+  (fan.source || []).forEach((key) => {
+    const info = (status && status.sources && status.sources[key]) || null;
+    if (!info || info.enabled === false) return;   // off sources do not drive fans
+    const value = info.temperature;
     if (value === null || value === undefined) return;
     best = (best === null) ? value : Math.max(best, value);
   });
   return best;
 }
 
+// The backend describes the sources (including one per GPU), so the UI never
+// has to know how many GPUs exist.
+function sourcesList() {
+  const live = (status && status.source_list) || [];
+  return live.length ? live : (hardware.source_list || []);
+}
+
+function sourceByKey(key) {
+  return sourcesList().find((item) => item.key === key) || null;
+}
+
+function livePercentFor(fan) {
+  const live = ((status && status.fans) || []).find((f) => f.channel === fan.channel);
+  if (!live || live.percent === null || live.percent === undefined) return null;
+  return Number(live.percent);
+}
+
 function renderSources() {
   const box = $('#sources');
-  const enabled = (cfg && cfg.sources) || {};
-  box.innerHTML = Object.keys(SOURCE_LABELS).map((key) => {
-    const info = (status && status.sources && status.sources[key]) || {};
+  const list = sourcesList();
+
+  box.innerHTML = list.map((src) => {
+    const on = !!src.enabled;
     return '' +
-      '<div class="source' + (enabled[key] ? ' on' : '') + '" data-source="' + key + '">' +
+      '<div class="source' + (on ? ' on' : '') + '" data-source="' + esc(src.key) + '">' +
         '<div class="source-head">' +
-          '<span class="source-name">' + esc(SOURCE_LABELS[key]) + '</span>' +
-          '<label class="switch"><input type="checkbox" data-src-toggle="' + key + '"' +
-            (enabled[key] ? ' checked' : '') + '><span class="track"><span class="knob"></span></span></label>' +
+          '<span class="source-name">' + esc(src.label) + '</span>' +
+          '<label class="switch"><input type="checkbox" data-src-toggle="' + esc(src.key) + '"' +
+            (on ? ' checked' : '') + '><span class="track"><span class="knob"></span></span></label>' +
         '</div>' +
-        '<p class="source-temp"><b data-live="temp">' + fmtTemp(info.temperature, 0) + '</b><small>°C</small></p>' +
-        '<p class="source-detail" data-live="detail">' + esc(info.detail || '未启用') + '</p>' +
+        '<p class="source-temp"><b data-live="temp">' + fmtTemp(src.temperature, 0) + '</b><small>°C</small></p>' +
+        '<p class="source-detail" data-live="detail">' + esc(src.detail || '—') + '</p>' +
+        '<p class="source-hint' + (on ? ' hidden' : '') + '">未参与调速，仅显示读数</p>' +
       '</div>';
   }).join('');
 
   $$('[data-src-toggle]').forEach((input) => {
     input.addEventListener('change', () => {
       const key = input.dataset.srcToggle;
-      cfg.sources[key] = input.checked;
-      input.closest('.source').classList.toggle('on', input.checked);
+      if (key.indexOf('gpu:') === 0) {
+        if (!cfg.sources.gpus) cfg.sources.gpus = {};
+        cfg.sources.gpus[key] = input.checked;
+      } else {
+        cfg.sources[key] = input.checked;
+      }
+      const card = input.closest('.source');
+      card.classList.toggle('on', input.checked);
+      const hint = $('.source-hint', card);
+      if (hint) hint.classList.toggle('hidden', input.checked);
       renderFanSources();
     });
   });
@@ -244,18 +288,26 @@ function renderDisks() {
   const allOff = selected.length === 0;
 
   box.innerHTML = disks.map((disk) => {
-    const id = disk.device || disk.id;
+    // Select by the disk's own identity, never by its kernel name: "sda" is
+    // only whichever drive enumerated first, so a re-cable would silently
+    // point the selection at a different disk.
+    const id = disk.id || disk.device;
+    const name = disk.device || disk.id;
     const on = allOff || selected.indexOf(id) >= 0;
     const hot = disk.temperature !== null && disk.temperature >= 50;
     return '' +
-      '<label class="disk' + (hot ? ' hot' : '') + '" data-disk="' + esc(id) + '">' +
+      '<label class="disk' + (hot ? ' hot' : '') + '" data-disk="' + esc(id) + '"' +
+        ' title="' + esc(id) + '">' +
         '<input type="checkbox" data-disk-toggle="' + esc(id) + '"' + (on ? ' checked' : '') + '>' +
-        '<span class="dev">' + esc(id) + '</span>' +
+        '<span class="dev">' + esc(name) + '</span>' +
         '<span class="model">' + esc(disk.label || disk.kind || '') + '</span>' +
         '<span class="dt" data-live="temp">' + fmtTemp(disk.temperature, 0) + '°</span>' +
       '</label>';
   }).join('') +
-  '<p class="curve-hint" style="grid-column:1/-1">不勾选任何硬盘时，使用全部硬盘中的最高温度。</p>';
+  '<p class="curve-hint" style="grid-column:1/-1">' +
+    '不勾选任何硬盘时，使用全部硬盘中的最高温度。' +
+    '选择按硬盘本身的型号与序列号记录，换盘位或改启动顺序后依然对应同一块盘。' +
+  '</p>';
 
   $$('[data-disk-toggle]').forEach((input) => {
     input.addEventListener('change', () => {
@@ -291,8 +343,18 @@ function buildFanCard(fan, channelInfo) {
       (missing ? '<span class="badge dim">无测速信号</span>' : '') +
       '<div class="fan-stats">' +
         '<span class="stat"><b data-live="rpm">–</b>RPM</span>' +
-        '<span class="stat"><b data-live="duty">–</b>占空比</span>' +
+        '<span class="stat"><b data-live="duty">–</b>转速</span>' +
         '<span class="stat">依据温度 <b data-live="temp">–</b>°C</span>' +
+        (fan.calibration && fan.calibration.rpm_max
+          ? '<span class="stat" title="硬件检测标定：' + fan.calibration.rpm_high +
+            ' RPM @100%，0%（' + fan.calibration.rpm_low + ' RPM）' +
+            (fan.calibration.at ? '，标定于 ' + new Date(fan.calibration.at * 1000).toLocaleString() : '') +
+            '">标定 <b>' + fan.calibration.rpm_min + '–' + fan.calibration.rpm_max + '</b>RPM' +
+            (fan.calibration.duty_low === 0 && fan.calibration.stops
+              ? ' <span class="tag yes">0% 可停转</span>' : '') +
+            (fan.calibration.responsive === false
+              ? ' <span class="tag warn">调速无效</span>' : '') + '</span>'
+          : '') +
       '</div>' +
       '<button class="fan-remove" title="从配置中移除此通道">移除</button>' +
     '</div>' +
@@ -306,24 +368,25 @@ function buildFanCard(fan, channelInfo) {
           '</select></div>' +
         '<div class="field"><span class="field-label">温度来源</span>' +
           '<div class="checks">' +
-            Object.keys(SOURCE_LABELS).map((key) =>
-              '<label><input type="checkbox" class="fan-src" value="' + key + '"' +
-              ((fan.source || []).indexOf(key) >= 0 ? ' checked' : '') + '>' +
-              SOURCE_LABELS[key] + '</label>').join('') +
+            sourcesList().map((src) =>
+              '<label><input type="checkbox" class="fan-src" value="' + esc(src.key) + '"' +
+              ((fan.source || []).indexOf(src.key) >= 0 ? ' checked' : '') + '>' +
+              esc(src.label) + '</label>').join('') +
           '</div></div>' +
-        '<div class="field"><label>最低占空比</label><div class="range-row">' +
+        '<div class="field"><label>最低转速</label><div class="range-row">' +
           '<input type="range" class="fan-min" min="0" max="255" value="' + fan.min_duty + '">' +
           '<b class="fan-min-v">' + pct(fan.min_duty) + '</b></div></div>' +
-        '<div class="field"><label>最高占空比</label><div class="range-row">' +
+        '<div class="field"><label>最高转速</label><div class="range-row">' +
           '<input type="range" class="fan-max" min="0" max="255" value="' + fan.max_duty + '">' +
           '<b class="fan-max-v">' + pct(fan.max_duty) + '</b></div></div>' +
-        '<div class="field fan-manual-field"><label>固定占空比</label><div class="range-row">' +
+        '<div class="field fan-manual-field"><label>固定转速</label><div class="range-row">' +
           '<input type="range" class="fan-manual" min="0" max="255" value="' + fan.manual_duty + '">' +
           '<b class="fan-manual-v">' + pct(fan.manual_duty) + '</b></div></div>' +
       '</div>' +
       '<div class="curve-wrap">' +
         '<svg viewBox="0 0 ' + CURVE.W + ' ' + CURVE.H + '"></svg>' +
-        '<p class="curve-hint">横轴温度 20–100 °C，纵轴占空比 0–100 %。虚线为当前温度。</p>' +
+        '<p class="curve-hint">横轴温度 20–100 °C，纵轴转速 0–100 %（占最大转速的比例）。' +
+        '绿点是当前工作点，虚线为当前温度。</p>' +
       '</div>' +
     '</div>';
 
@@ -413,12 +476,12 @@ function renderFans() {
 }
 
 function renderFanSources() {
-  // keep the source dropdown semantics visible when a source is switched off
+  // grey out sources that are switched off: a fan may reference them, but they
+  // contribute nothing until the source itself is enabled
+  const state = new Map(sourcesList().map((src) => [src.key, !!src.enabled]));
   $$('.fan').forEach((card) => {
-    const fan = (cfg.fans || []).find((f) => String(f.channel) === card.dataset.channel);
-    if (!fan) return;
     $$('.fan-src', card).forEach((input) => {
-      const off = cfg.sources[input.value] === false;
+      const off = state.get(input.value) === false;
       input.disabled = off;
       input.parentElement.style.opacity = off ? '.45' : '1';
     });
@@ -431,7 +494,7 @@ function renderSettings() {
     { key: 'interval', label: '控制周期（秒）', min: 1, max: 60, hint: '每次读取温度并调整风扇的间隔' },
     { key: 'hdd_interval', label: '硬盘温度读取间隔（秒）', min: 10, max: 3600, hint: '间隔越长越不容易唤醒休眠硬盘' },
     { key: 'hysteresis', label: '温度迟滞（°C）', min: 0, max: 20, hint: '降温超过该幅度才允许风扇降速，避免反复变速' },
-    { key: 'fail_safe_duty', label: '失效保护占空比', min: 0, max: 255, hint: '所有温度源都不可用时使用', duty: true }
+    { key: 'fail_safe_duty', label: '失效保护转速', min: 0, max: 255, hint: '所有温度源都不可用时使用', duty: true }
   ];
   box.innerHTML = fields.map((f) => {
     const value = cfg[f.key];
@@ -455,7 +518,7 @@ function renderSettings() {
         const label = input.parentElement.querySelector('b');
         if (label) label.textContent = pct(value);
         const title = input.parentElement.parentElement.querySelector('label');
-        if (title) title.textContent = '失效保护占空比（' + pct(value) + '）';
+        if (title) title.textContent = '失效保护转速（' + pct(value) + '）';
       }
     });
   });
@@ -513,17 +576,26 @@ function updateLive() {
       : '运行中';
   }
 
+  // Re-render the source grid if the set of sources changed (e.g. a GPU was
+  // added or removed), otherwise just refresh the readings in place.
+  const keys = sourcesList().map((src) => src.key).join(',');
+  if (keys !== lastSourceKeys) {
+    lastSourceKeys = keys;
+    renderSources();
+    renderFanSources();
+  }
   $$('.source').forEach((card) => {
-    const info = (status.sources || {})[card.dataset.source] || {};
+    const src = sourceByKey(card.dataset.source);
+    if (!src) return;
     const temp = $('[data-live="temp"]', card);
     const detail = $('[data-live="detail"]', card);
-    if (temp) temp.textContent = fmtTemp(info.temperature, 0);
-    if (detail) detail.textContent = info.detail || '不可用';
+    if (temp) temp.textContent = fmtTemp(src.temperature, 0);
+    if (detail) detail.textContent = src.detail || '不可用';
   });
 
   $$('[data-disk]').forEach((row) => {
     const id = row.dataset.disk;
-    const disk = (status.devices || []).find((d) => (d.device || d.id) === id);
+    const disk = (status.devices || []).find((d) => (d.id || d.device) === id);
     const cell = $('[data-live="temp"]', row);
     if (disk && cell) {
       cell.textContent = fmtTemp(disk.temperature, 0) + '°';
@@ -545,7 +617,7 @@ function updateLive() {
     if (temp) temp.textContent = fmtTemp(fan.temperature, 0);
 
     const model = (cfg.fans || []).find((f) => String(f.channel) === card.dataset.channel);
-    if (model) drawCurve($('svg', card), model.points, liveTempFor(model));
+    if (model) drawCurve($('svg', card), model.points, liveTempFor(model), livePercentFor(model));
   });
 }
 
@@ -586,7 +658,13 @@ async function boot() {
   try {
     hardware = await api('hardware');
   } catch (err) {
-    hardware = { channels: [], disks: [] };
+    hardware = { channels: [], disks: [], gpus: [] };
+  }
+  try {
+    // fetch status first: it carries the source list the UI renders
+    status = await api('status');
+  } catch (err) {
+    /* refresh() below will surface the failure */
   }
   try {
     await loadConfig();
@@ -594,6 +672,7 @@ async function boot() {
     showAlert('无法读取配置：' + err.message, true);
     return;
   }
+  await loadDonate();
   await refresh();
   pollTimer = setInterval(refresh, 2000);
   if (status && status.needs_setup) {
@@ -641,6 +720,7 @@ $('#master').addEventListener('change', async (event) => {
 /* ----------------------------------------------------------- setup wizard -- */
 
 let setupState = { results: null, selected: null, probing: false, busy: false };
+let lastSourceKeys = null;
 
 // Channel list for the wizard: everything the controller exposes, merged with
 // the most recent probe result when there is one.
@@ -703,22 +783,37 @@ function renderSetup() {
     const has = detectedOf(c);
     const ok = c.controllable !== false;
     const sel = setupState.selected.has(c.channel);
-    const rpm = (c.rpm_before !== undefined)
-      ? c.rpm_before + ' → ' + c.rpm_peak
-      : (c.rpm === null || c.rpm === undefined ? '–' : String(c.rpm));
+    const probed = c.rpm_high !== undefined && c.rpm_high !== null;
+    const pctOf = (duty) => Math.round(duty * 100 / 255);
+    const low = (probed && c.rpm_low !== null && c.rpm_low !== undefined)
+      ? { rpm: c.rpm_low, percent: pctOf(c.duty_low) } : null;
+    const high = probed ? { rpm: c.rpm_high, percent: pctOf(c.duty_high) } : null;
+    const cell = (pt) => (pt
+      ? '<span class="num">' + pt.rpm + '</span> <small>@' + pt.percent + '%</small>'
+      : '<span class="num">–</span>');
+    let verdict;
+    if (!ok) verdict = '<span class="tag warn">不可调速</span>';
+    else if (!probed) verdict = '<span class="tag no">未标定</span>';
+    else if (c.responsive) verdict = '<span class="tag yes">调速有效</span>';
+    else verdict = '<span class="tag warn">转速无变化</span>';
+    // only meaningful for a calibration that actually measured 0 %
+    if (probed && c.duty_low === 0 && c.stops) {
+      verdict += ' <span class="tag yes" title="0% 时转速为 0，可以把最低转速设到 0">可停转</span>';
+    }
     const src = c.temp_sel_label
       ? esc(c.temp_sel_label)
       : (c.temp_sel === null || c.temp_sel === undefined ? '–' : 'temp' + c.temp_sel);
+    const mode = c.mode === 0 ? 'DC' : (c.mode === 1 ? 'PWM' : '–');
     return '' +
       '<tr class="' + (has ? 'detected' : '') + '">' +
         '<td><input type="checkbox" data-chan="' + c.channel + '"' +
           (sel ? ' checked' : '') + (ok ? '' : ' disabled') + '></td>' +
         '<td><span class="badge">CH' + c.channel + '</span></td>' +
-        '<td class="num">' + rpm + '</td>' +
-        '<td>' + (has ? '<span class="tag yes">有风扇</span>'
-                      : '<span class="tag no">无转速</span>') + '</td>' +
+        '<td>' + cell(low) + '</td>' +
+        '<td>' + cell(high) + '</td>' +
+        '<td>' + mode + '</td>' +
+        '<td>' + verdict + '</td>' +
         '<td>' + src + '</td>' +
-        '<td class="num">' + (c.duty === null || c.duty === undefined ? '–' : c.duty) + '</td>' +
       '</tr>';
   }).join('');
 
@@ -737,14 +832,29 @@ function renderSetup() {
         others.map((o) => esc(o.name + '（' + o.hwmon + '）')).join('、') + '</div>'
       : '') +
     '<table class="chan-table">' +
-      '<thead><tr><th style="width:34px"></th><th>通道</th><th>转速 RPM</th>' +
-      '<th>风扇</th><th>BIOS 绑定的温度源</th><th>当前占空比</th></tr></thead>' +
+      '<thead><tr><th style="width:34px"></th><th>通道</th>' +
+      '<th>最低转速 RPM</th><th>最高转速 RPM</th><th title="DC = 电压调速，PWM = 脉宽调速">模式</th>' +
+      '<th>调速</th><th>BIOS 绑定的温度源</th></tr></thead>' +
       '<tbody>' + rows + '</tbody>' +
     '</table>' +
     '<p class="curve-hint" style="margin-top:10px">' +
-      '「无转速」的通道通常没有接风扇，可以不勾选。' +
-      '如果某个风扇当时是停转的而被漏判，点下面的「主动检测」逐个通道试转一次即可识别。' +
-    '</p>';
+      '「主动检测」会把每路先拉满、再降到 0% 各测一次：这样既有转速范围，也能判断该路' +
+      '是否真的受 PWM 控制，还能看出风扇是否支持停转（0% 时读到 0 RPM 就是支持）。' +
+      '未检测时不改变任何设置。' +
+    '</p>' +
+    (function () {
+      const bad = channels.filter((c) => (c.hints || []).length);
+      if (!bad.length) return '';
+      return '<div class="alert" style="margin-top:12px">' +
+        '<strong>有转速但调不动？逐条排查：</strong>' +
+        bad.map((c) => '<p style="margin:10px 0 0"><b>CH' + c.channel + '</b>' +
+          (c.rpm_low !== null && c.rpm_low !== undefined
+            ? '（' + c.rpm_low + ' → ' + c.rpm_high + ' RPM）' : '') + '</p>' +
+          '<ul style="margin:4px 0 0 18px">' +
+          c.hints.map((h) => '<li>' + esc(h) + '</li>').join('') +
+          '</ul>').join('') +
+        '</div>';
+    })();
 
   $$('[data-chan]').forEach((input) => {
     input.addEventListener('change', () => {
@@ -756,7 +866,15 @@ function renderSetup() {
   });
 
   $('#setup-apply').disabled = !controllable;
-  note.textContent = '已选 ' + setupState.selected.size + ' / ' + channels.length + ' 个通道';
+  const stored = channels.filter((c) => c.stored).length;
+  const stamped = channels
+    .map((c) => c.at)
+    .filter((value) => value);
+  const when = stamped.length
+    ? new Date(Math.max.apply(null, stamped) * 1000).toLocaleString()
+    : null;
+  note.textContent = '已选 ' + setupState.selected.size + ' / ' + channels.length + ' 个通道' +
+    (stored ? '　·　' + stored + ' 路显示的是已保存的标定' + (when ? '（' + when + '）' : '') : '');
 }
 
 async function runProbe() {
@@ -765,9 +883,9 @@ async function runProbe() {
   const button = $('#setup-probe');
   const note = $('#setup-note');
   button.disabled = true;
-  note.innerHTML = '<span class="spin"></span>正在逐个通道全速试转，请稍候（每路约 2 秒）…';
+  note.innerHTML = '<span class="spin"></span>正在逐路标定（先约 30% 再全速，各等转速稳定）…';
   try {
-    const res = await api('probe', { method: 'POST', body: JSON.stringify({ settle: 2 }) });
+    const res = await api('probe', { method: 'POST', body: JSON.stringify({ settle: 4 }) });
     setupState.results = res.results || [];
     hardware = res.hardware || hardware;
     // newly found fans join the selection; nothing is ever removed
@@ -777,7 +895,10 @@ async function runProbe() {
     });
     renderSetup();
     const found = setupState.results.filter((r) => r.detected).length;
-    toast('检测完成：' + found + ' / ' + setupState.results.length + ' 个通道接有风扇');
+    const dead = setupState.results.filter(
+      (r) => r.detected && r.responsive === false).length;
+    toast('标定完成：' + found + ' / ' + setupState.results.length + ' 路接有风扇' +
+          (dead ? '，其中 ' + dead + ' 路转速不受控' : ''));
   } catch (err) {
     note.textContent = '';
     toast('检测失败：' + err.message, true);
@@ -836,5 +957,66 @@ $('#setup-select-detected').addEventListener('click', () => {
 $('#setup').addEventListener('click', (event) => {
   if (event.target === $('#setup')) dismissSetup();
 });
+
+/* ----------------------------------------------------------------- donate -- */
+
+// Purely local: the configuration and the images are static files shipped with
+// the app.  Nothing is fetched from the network and no click is ever reported.
+let donate = null;
+
+async function loadDonate() {
+  const button = $('#btn-donate');
+  try {
+    const res = await fetch(ASSET + 'donate.json', { cache: 'no-store' });
+    donate = res.ok ? await res.json() : null;
+  } catch (err) {
+    donate = null;
+  }
+  if (!donate || donate.enabled === false) {
+    button.classList.add('hidden');   // no config, or switched off: stay invisible
+    return;
+  }
+  button.classList.remove('hidden');
+  renderDonate();
+}
+
+function renderDonate() {
+  if (!donate || donate.enabled === false) return;
+  const body = $('#donate-body');
+  $('#donate-title').textContent = donate.title || '支持作者';
+
+  const qrs = (donate.qrcodes || []).map((qr) =>
+    '<figure class="qr">' +
+      '<img data-qr="' + esc(qr.image) + '" alt="' + esc(qr.label) + '">' +
+      '<figcaption>' + esc(qr.label) + '</figcaption>' +
+    '</figure>').join('');
+  const links = (donate.links || []).map((link) =>
+    '<a class="btn" target="_blank" rel="noopener noreferrer" href="' + esc(link.url) + '">' +
+    esc(link.label) + '</a>').join('');
+
+  body.innerHTML =
+    (donate.message ? '<p class="donate-msg">' + esc(donate.message) + '</p>' : '') +
+    (qrs ? '<div class="qr-grid">' + qrs + '</div>' : '') +
+    (links ? '<div class="donate-links">' + links + '</div>' : '') +
+    (donate.note ? '<p class="curve-hint">' + esc(donate.note) + '</p>' : '');
+
+  $$('.qr img', body).forEach((img) => {
+    img.addEventListener('error', () => {
+      const missing = document.createElement('div');
+      missing.className = 'qr-missing';
+      missing.textContent = '图片缺失';
+      img.replaceWith(missing);
+    });
+    img.src = ASSET + img.dataset.qr;
+  });
+
+}
+
+$('#btn-donate').addEventListener('click', () => $('#donate').classList.remove('hidden'));
+$('#donate-close').addEventListener('click', () => $('#donate').classList.add('hidden'));
+$('#donate').addEventListener('click', (event) => {
+  if (event.target === $('#donate')) $('#donate').classList.add('hidden');
+});
+
 
 boot();

@@ -1,3 +1,9 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later
+     Copyright (C) 2026 LiuFudi
+
+     This file is part of fn-fancontrol, licensed under the GNU General Public
+     License version 3 or (at your option) any later version.
+     See the LICENSE file for the full text. -->
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -22,6 +28,7 @@
         <span class="track"><span class="knob"></span></span>
         <span class="switch-label">启用调速</span>
       </label>
+      <button class="btn ghost hidden" id="btn-donate" title="支持作者">❤ 打赏</button>
       <button class="btn ghost" id="btn-detect" title="重新扫描风扇控制器与实际通道">硬件检测</button>
       <button class="btn ghost" id="btn-restore" title="立即让 BIOS 接管所有风扇">交还 BIOS</button>
       <button class="btn ghost" id="btn-reload">放弃修改</button>
@@ -73,6 +80,16 @@
         <button class="btn ghost" id="setup-probe" title="逐个通道全速试转，识别停转的风扇">主动检测</button>
         <button class="btn primary" id="setup-apply">应用并保存</button>
       </footer>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="donate">
+    <div class="modal-box modal-box-sm">
+      <header class="modal-head">
+        <h2 id="donate-title">支持作者</h2>
+        <button class="modal-close" id="donate-close" title="关闭">✕</button>
+      </header>
+      <div class="modal-body" id="donate-body"></div>
     </div>
   </div>
 

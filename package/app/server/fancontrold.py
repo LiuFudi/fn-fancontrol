@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 LiuFudi
+#
+# This file is part of fn-fancontrol, licensed under the GNU General Public
+# License version 3 or (at your option) any later version.
+# See the LICENSE file for the full text.
 """fn-fancontrol daemon.
 
 Reads a temperature source (CPU, GPU or disks), runs it through a per-fan
@@ -38,7 +44,7 @@ import fanhardware  # noqa: E402
 APP_NAME = "fn-fancontrol"
 # Must be kept in step with the ``version`` field of the package manifest:
 # the app center does not export TRIM_APPVER to the daemon.
-VERSION = "1.3.0"
+VERSION = "1.10.0"
 
 MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -95,12 +101,12 @@ class Controller:
         self.hold = {}          # channel -> (temp, duty) used for hysteresis
         self.fan_state = {}     # channel -> last evaluated state
         self.original = {}      # channel -> (enable, duty) before we touched it
-        self.sources = {
-            "cpu": {"temperature": None, "detail": None},
-            "gpu": {"temperature": None, "detail": None},
-            "hdd": {"temperature": None, "detail": None},
-        }
+        self.mode_at = {}       # channel -> when manual mode was last asserted
+        self.probe_results = {} # channel -> latest calibration result
+        # keyed by source key: "cpu", "hdd", and one "gpu:<id>" per GPU
+        self.sources = {}
         self.disks = []
+        self.gpus = []
         self.hdd_read_at = 0.0
         self.degraded = False
         self.updated = 0.0
@@ -117,6 +123,11 @@ class Controller:
 
     # -- hardware ---------------------------------------------------------- #
 
+    @property
+    def gpu_keys(self):
+        """Source keys for the GPUs present on this machine."""
+        return [fanconfig.GPU_PREFIX + gpu.id for gpu in self.gpus]
+
     def refresh_hardware(self):
         """Re-scan hwmon; safe to call at any time."""
         loaded = fanhardware.ensure_modules(self.log)
@@ -130,6 +141,7 @@ class Controller:
             self.hardware_ready = bool(self.channels)
             self.controllable = bool(profile and profile.controllable)
             self.disks = fanhardware.list_disk_sensors()
+            self.gpus = fanhardware.list_gpu_sensors()
         if not self.hardware_ready:
             self.log("no fan controller with a PWM channel was found")
         elif not self.controllable:
@@ -142,6 +154,38 @@ class Controller:
                      % (chip, profile.key, len(self.channels), " ".join(headers)))
 
     # -- config ------------------------------------------------------------ #
+
+    def _migrate_disk_selection(self, config):
+        """Rewrite position-derived device names (``sda``) into stable disk ids.
+
+        ``sda`` only means "whichever disk the kernel enumerated first", so a
+        configuration that stores it silently starts following a *different*
+        drive as soon as disks are re-cabled or the boot order changes.
+        Existing selections are upgraded in place using the current mapping.
+        """
+        selected = (config.get("sources") or {}).get("hdd_devices") or []
+        if not selected:
+            return config
+        by_device = {sensor.device: sensor.id for sensor in self.disks if sensor.device}
+        known = {sensor.id for sensor in self.disks}
+        migrated = []
+        changed = False
+        for item in selected:
+            if item in known:
+                migrated.append(item)
+            elif item in by_device and by_device[item] != item:
+                migrated.append(by_device[item])
+                changed = True
+            else:
+                migrated.append(item)   # unknown disk: leave it alone
+        if changed:
+            config["sources"]["hdd_devices"] = migrated
+            fanconfig.save(self.config_path, config)
+            self.log("disk selection migrated from device names to stable ids")
+            for old, new in zip(selected, migrated):
+                if old != new:
+                    self.log("  %s -> %s" % (old, new))
+        return config
 
     def load_config(self, create_if_missing=True):
         channels = list(self.channels.values())
@@ -156,11 +200,11 @@ class Controller:
         except (OSError, ValueError):
             legacy = False
 
-        config = fanconfig.load(self.config_path, channels)
+        config = fanconfig.load(self.config_path, channels, self.gpu_keys)
         if config is None:
             if not create_if_missing:
                 return None
-            config = fanconfig.build_default_config(channels)
+            config = fanconfig.build_default_config(channels, gpu_keys=self.gpu_keys)
             fanconfig.save(self.config_path, config)
             self.log("created default config at %s" % self.config_path)
         elif legacy:
@@ -168,14 +212,27 @@ class Controller:
             fanconfig.save(self.config_path, config)
             self.log("config predates the detection wizard; showing it once")
 
+        self._migrate_disk_selection(config)
+
+        # Reload the calibrations that are already stored, so the detection
+        # table is populated the moment the UI opens instead of looking empty.
+        stored = {}
+        for fan in config.get("fans", []):
+            result = fanconfig.calibration_as_result(fan["channel"],
+                                                     fan.get("calibration"))
+            if result:
+                stored[fan["channel"]] = result
+
         with self.lock:
             self.config = config
+            self.probe_results = stored
         return config
 
     def apply_config(self, raw):
         """Validate, persist and immediately apply a new configuration."""
         channels = list(self.channels.values())
-        config = fanconfig.normalise(raw, channels)
+        config = fanconfig.normalise(raw, channels, self.gpu_keys)
+        self._migrate_disk_selection(config)
         fanconfig.save(self.config_path, config)
         with self.lock:
             previously_managed = set(self.applied)
@@ -183,6 +240,7 @@ class Controller:
             self.config = config
             # force a rewrite on the next tick
             self.applied.clear()
+            self.mode_at.clear()
             self.written.clear()
             self.hold.clear()
             self.fan_state = {
@@ -203,24 +261,30 @@ class Controller:
     # -- temperature sources ----------------------------------------------- #
 
     def _read_sources(self, force_disks=False):
-        config = self.config or fanconfig.DEFAULT_CONFIG
+        with self.lock:
+            config = self.config or fanconfig.DEFAULT_CONFIG
+            gpus = list(self.gpus)
         wanted = config["sources"]
         now = time.time()
 
-        if wanted.get("cpu"):
-            value, detail = fanhardware.read_cpu()
-            self.sources["cpu"] = {"temperature": value, "detail": detail}
-        else:
-            self.sources["cpu"] = {"temperature": None, "detail": "disabled"}
+        # CPU and GPU are read unconditionally, even when switched off: the UI
+        # can then show "43C (not enabled)" rather than a bare dash, which is
+        # the difference between "no sensor on this machine" and "you have not
+        # turned it on".  The enabled flag only decides who may follow it.
+        value, detail = fanhardware.read_cpu()
+        self.sources["cpu"] = {"temperature": value, "detail": detail}
 
-        if wanted.get("gpu"):
-            value, detail = fanhardware.read_gpu()
-            self.sources["gpu"] = {"temperature": value, "detail": detail}
-        else:
-            self.sources["gpu"] = {"temperature": None, "detail": "disabled"}
+        for gpu in gpus:
+            key = fanconfig.GPU_PREFIX + gpu.id
+            self.sources[key] = {
+                "temperature": gpu.temperature(),
+                "detail": gpu.label or gpu.id,
+            }
 
         if not wanted.get("hdd"):
-            self.sources["hdd"] = {"temperature": None, "detail": "disabled"}
+            # Disks are different: reading them can spin a sleeping drive up,
+            # so a switched-off disk source is genuinely not polled.
+            self.sources["hdd"] = {"temperature": None, "detail": "未启用"}
             return
 
         # Disks change temperature slowly, so poll them far less often: this
@@ -232,10 +296,42 @@ class Controller:
             value, detail = fanhardware.read_hdd(self.disks, selected)
             self.sources["hdd"] = {"temperature": value, "detail": detail}
 
+    @staticmethod
+    def _source_enabled(key, wanted, gpu_switches):
+        if key.startswith(fanconfig.GPU_PREFIX):
+            return bool(gpu_switches.get(key, False))
+        return bool(wanted.get(key))
+
+    def _source_state(self):
+        """Latest readings merged with the configured on/off switches.
+
+        ``enabled`` is taken from the *config*, not from the last poll, so a
+        toggle is reflected the moment it is saved rather than up to one control
+        interval later.
+        """
+        with self.lock:
+            gpus = list(self.gpus)
+            readings = {key: dict(info) for key, info in self.sources.items()}
+            config = self.config or fanconfig.DEFAULT_CONFIG
+        wanted = config["sources"]
+        gpu_switches = wanted.get("gpus") or {}
+
+        keys = ["cpu"] + [fanconfig.GPU_PREFIX + g.id for g in gpus] + ["hdd"]
+        state = {}
+        for key in keys:
+            info = readings.get(key) or {"temperature": None, "detail": None}
+            info["enabled"] = self._source_enabled(key, wanted, gpu_switches)
+            state[key] = info
+        return state
+
     def _effective_temperature(self, keys):
+        state = self._source_state()
         best = None
         for key in keys:
-            value = self.sources.get(key, {}).get("temperature")
+            info = state.get(key) or {}
+            if not info.get("enabled", True):
+                continue  # switched off: readable, but not a control input
+            value = info.get("temperature")
             if value is None:
                 continue
             best = value if best is None else max(best, value)
@@ -254,17 +350,30 @@ class Controller:
             return
         self.original[channel.index] = (channel.enable, channel.duty)
 
+    #: Re-assert manual mode this often.  Some boards (ASUS in particular) take
+    #: the SuperIO back periodically, which silently drops the fan to the BIOS
+    #: curve while we keep believing we are in control.  One register write is
+    #: cheap insurance against that.
+    REASSERT_SECONDS = 30.0
+
     def _apply_duty(self, channel, duty):
         if not channel.controllable:
             return
-        if self.applied.get(channel.index) != "manual":
-            self._remember_original(channel)
-            fanhardware.write_text(channel.path_enable, 1)
-            self.applied[channel.index] = "manual"
-            self.written.pop(channel.index, None)
-        if self.written.get(channel.index) != duty:
+        index = channel.index
+        mode = self.applied.get(index)
+        stale = time.time() - self.mode_at.get(index, 0.0) >= self.REASSERT_SECONDS
+        if mode != "manual" or stale:
+            if mode != "manual":
+                self._remember_original(channel)
+            # profile.manual, not a hard-coded 1: the value differs per driver
+            fanhardware.write_text(channel.path_enable, channel.profile.manual)
+            self.applied[index] = "manual"
+            self.mode_at[index] = time.time()
+            if mode != "manual":
+                self.written.pop(index, None)
+        if self.written.get(index) != duty:
             fanhardware.write_text(channel.path_pwm, duty)
-            self.written[channel.index] = duty
+            self.written[index] = duty
 
     def _apply_auto(self, channel):
         if self.applied.get(channel.index) != "auto":
@@ -327,16 +436,30 @@ class Controller:
                         duty = fanconfig.duty_from_percent(
                             percent, fan["min_duty"], fan["max_duty"]
                         )
-                        state["percent"] = round(percent, 1)
+                        state["curve_percent"] = round(percent, 1)
                         previous = self.hold.get(fan["channel"])
-                        if previous and duty < previous[1]:
-                            if temperature > previous[0] - config["hysteresis"]:
-                                # not cooled down enough yet -- keep the fan where it is
-                                duty = previous[1]
-                                state["percent"] = round(previous[1] * 100.0 / 255.0, 1)
-                        self.hold[fan["channel"]] = (temperature, duty)
+                        if previous is not None:
+                            held_temp, held_duty = previous
+                            if (duty < held_duty
+                                    and temperature > held_temp - config["hysteresis"]):
+                                # Not cooled down far enough yet: hold the current
+                                # duty AND the reference temperature it belongs to.
+                                # Re-seeding the reference every tick would compare
+                                # against the previous tick instead of against the
+                                # temperature that produced this duty, so the fan
+                                # would ratchet up on every transient spike and never
+                                # come back down.
+                                duty = held_duty
+                            else:
+                                self.hold[fan["channel"]] = (temperature, duty)
+                        else:
+                            self.hold[fan["channel"]] = (temperature, duty)
                     self._apply_duty(channel, duty)
                     state["duty"] = duty
+                    # Report what actually reaches the register (hysteresis or
+                    # the min/max limits may differ from the raw curve value);
+                    # curve_percent keeps the unmodified reading for debugging.
+                    state["percent"] = round(duty * 100.0 / 255.0, 1)
             except OSError as exc:
                 state["error"] = str(exc)
                 channel.last_error = str(exc)
@@ -396,12 +519,13 @@ class Controller:
             except OSError as exc:
                 self.log("restore fan%d failed: %s" % (index, exc))
         self.applied.clear()
+        self.mode_at.clear()
         self.written.clear()
         self.log("handed channel(s) back: %s" % (", ".join(restored),))
 
     # -- first-run detection ----------------------------------------------- #
 
-    def probe(self, settle=2.0):
+    def probe(self, settle=None):
         """Pause control and spin every header up to see which ones have a fan.
 
         Returns one result dict per header.  Every header is put back exactly as
@@ -416,14 +540,41 @@ class Controller:
         try:
             time.sleep(0.3)  # let an in-flight tick finish and stay out
             self.log("probing %d header(s), %.1fs each" % (len(channels), settle))
-            results = fanhardware.probe_channels(channels, self.log, settle=settle)
+            # ``settle`` is the spin-down wait; spinning up is quicker, so the
+            # high point gets a proportionally shorter one.
+            kwargs = {}
+            if settle:
+                kwargs["low_settle"] = float(settle)
+                kwargs["high_settle"] = max(1.2, float(settle) * 0.7)
+            results = fanhardware.probe_channels(channels, self.log, **kwargs)
             with self.lock:
                 self.applied.clear()
+                self.mode_at.clear()
                 self.written.clear()
                 self.hold.clear()
+                self.probe_results = {item["channel"]: item for item in results}
             return results
         finally:
             self.paused.clear()
+
+    def _calibration_for(self, index):
+        """Turn a probe result into a storable calibration record."""
+        result = self.probe_results.get(index)
+        if not result or result.get("rpm_high") is None:
+            return None
+        if not result.get("rpm_max"):
+            return None
+        return {
+            "duty_low": int(result["duty_low"]),
+            "rpm_low": int(result["rpm_low"] or 0),
+            "duty_high": int(result["duty_high"]),
+            "rpm_high": int(result["rpm_high"] or 0),
+            "rpm_min": int(result["rpm_min"] or 0),
+            "rpm_max": int(result["rpm_max"] or 0),
+            "responsive": bool(result.get("responsive")),
+            "stops": bool(result.get("stops")),
+            "at": int(time.time()),
+        }
 
     def apply_setup(self, selected):
         """Complete the first-run wizard.
@@ -441,7 +592,11 @@ class Controller:
             channel = channels.get(index)
             if channel is None:
                 continue
-            fans.append(existing.get(index, fanconfig.default_fan_for_channel(channel)))
+            fan = dict(existing.get(index) or fanconfig.default_fan_for_channel(channel))
+            calibration = self._calibration_for(index)
+            if calibration:
+                fan["calibration"] = calibration
+            fans.append(fan)
         raw = dict(self.config or fanconfig.DEFAULT_CONFIG)
         raw["fans"] = fans
         raw["setup_complete"] = True
@@ -449,6 +604,37 @@ class Controller:
         return self.apply_config(raw)
 
     # -- reporting --------------------------------------------------------- #
+
+    def source_list(self):
+        """Describe every temperature source for the UI, in display order.
+
+        The frontend renders exactly this list, so a machine with two GPUs just
+        gets two cards -- the UI needs no idea how many GPUs exist.
+        """
+        with self.lock:
+            gpus = list(self.gpus)
+        sources = self._source_state()
+
+        items = []
+
+        def add(key, kind, label, info):
+            items.append({
+                "key": key,
+                "kind": kind,
+                "label": label,
+                "enabled": bool(info.get("enabled")),
+                "temperature": info.get("temperature"),
+                "detail": info.get("detail"),
+            })
+
+        add("cpu", "cpu", "CPU", sources.get("cpu") or {})
+        for index, gpu in enumerate(gpus, start=1):
+            key = fanconfig.GPU_PREFIX + gpu.id
+            label = "显卡%d" % index if len(gpus) > 1 else "显卡"
+            add(key, "gpu", label,
+                sources.get(key) or {"detail": gpu.label or gpu.id})
+        add("hdd", "hdd", "硬盘", sources.get("hdd") or {})
+        return items
 
     def status(self):
         with self.lock:
@@ -473,11 +659,13 @@ class Controller:
                         "min_duty": fan["min_duty"],
                         "max_duty": fan["max_duty"],
                         "manual_duty": fan["manual_duty"],
+                        "calibration": fan.get("calibration"),
                         "rpm": channel.rpm if channel else None,
                         "enable": channel.enable if channel else None,
                         "present": channel.present if channel else False,
                         "temperature": state.get("temperature"),
                         "percent": state.get("percent"),
+                        "curve_percent": state.get("curve_percent"),
                         "duty": state.get("duty"),
                         "degraded": state.get("degraded", False),
                         "error": state.get("error"),
@@ -500,8 +688,10 @@ class Controller:
                 "caller": self.last_identity,
                 "unsupported": fanhardware.detect_other_controllers(),
                 "locked": config["fail_safe_duty"] == 255 and self.degraded,
-                "sources": {k: dict(v) for k, v in self.sources.items()},
+                "sources": self._source_state(),
+                "source_list": self.source_list(),
                 "devices": [d.as_dict() for d in self.disks],
+                "gpus": [g.as_dict() for g in self.gpus],
                 "fans": fans,
                 "config": config,
             }
@@ -510,12 +700,14 @@ class Controller:
         with self.lock:
             channels = [c.as_dict() for c in self.channels.values()]
             disks = [d.as_dict() for d in self.disks]
+            gpus = [g.as_dict() for g in self.gpus]
             chip = self.chip
         return {
             "chip": chip,
             "controller": self.profile.as_dict() if self.profile else None,
             "channels": channels,
             "disks": disks,
+            "gpus": gpus,
             "profiles": [p.as_dict() for p in fanhardware.PROFILES],
             "unsupported": fanhardware.detect_other_controllers(),
         }
@@ -705,10 +897,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json({"ok": True, "config": config})
         elif path == "/api/probe":
             try:
-                settle = float((payload or {}).get("settle", 2.0))
+                settle = float((payload or {}).get("settle", 3.5))
             except (TypeError, ValueError):
-                settle = 2.0
-            settle = max(0.5, min(10.0, settle))
+                settle = 3.5
+            settle = max(1.0, min(15.0, settle))
             results = controller.probe(settle)
             self._json({"ok": True, "results": results,
                         "hardware": controller.hardware_info()})
@@ -789,6 +981,19 @@ def cmd_init_config(args, log, paths):
         return 0
     config = fanconfig.build_default_config(list(controller.channels.values()),
                                             setup_complete=False)
+
+    # Switch on exactly the sources this machine can actually read, so a fresh
+    # install never starts with a working sensor silently turned off.
+    config["sources"]["cpu"] = fanhardware.read_cpu()[1] is not None
+    config["sources"]["hdd"] = fanhardware.read_hdd(controller.disks)[1] is not None
+    config["sources"]["gpus"] = {
+        fanconfig.GPU_PREFIX + gpu.id: gpu.temperature() is not None
+        for gpu in controller.gpus
+    }
+    log("detected temperature sources: cpu=%s hdd=%s gpus=%s"
+        % (config["sources"]["cpu"], config["sources"]["hdd"],
+           [k for k, v in config["sources"]["gpus"].items() if v] or "none"))
+
     fanconfig.save(paths["config"], config)
     log("wrote %s with %d fan(s): %s"
         % (paths["config"], len(config["fans"]),

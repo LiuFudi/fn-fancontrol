@@ -1,5 +1,9 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 LiuFudi
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 LiuFudi
+#
+# This file is part of fn-fancontrol, licensed under the GNU General Public
+# License version 3 or (at your option) any later version.
+# See the LICENSE file for the full text.
 """Hardware access layer for fn-fancontrol.
 
 Three responsibilities:
@@ -319,7 +323,9 @@ class FanChannel:
         self.path_pwm = os.path.join(hwmon, "pwm%d" % index)
         self.path_enable = os.path.join(hwmon, "pwm%d_enable" % index)
         self.path_temp_sel = os.path.join(hwmon, "pwm%d_temp_sel" % index)
+        self.path_mode = os.path.join(hwmon, "pwm%d_mode" % index)
         self.peak_rpm = 0
+        self.low_rpm = None
         self.last_error = None
 
     # -- readings ---------------------------------------------------------- #
@@ -331,6 +337,8 @@ class FanChannel:
             return None
         if value > self.peak_rpm:
             self.peak_rpm = value
+        if value > 0 and (self.low_rpm is None or value < self.low_rpm):
+            self.low_rpm = value
         return value
 
     @property
@@ -346,6 +354,16 @@ class FanChannel:
     def present(self):
         """True once this header has ever reported a tach signal."""
         return self.peak_rpm > 0
+
+    @property
+    def mode(self):
+        """Output mode: 0 = DC (voltage), 1 = PWM, None when unsupported.
+
+        A header wired for DC control can ignore duty-cycle writes entirely,
+        which is one of the most common reasons a fan spins but cannot be
+        regulated -- so it is worth surfacing.
+        """
+        return read_int(self.path_mode)
 
     @property
     def temp_sel(self):
@@ -377,8 +395,11 @@ class FanChannel:
             "duty": self.duty,
             "enable": self.enable,
             "present": self.present,
+            "rpm_min_seen": self.low_rpm,
+            "rpm_max_seen": self.peak_rpm or None,
             "temp_sel": self.temp_sel,
             "temp_sel_label": self.temp_sel_label,
+            "mode": self.mode,
             "controllable": self.controllable,
             "error": self.last_error,
         }
@@ -482,59 +503,187 @@ def restore_all_to_auto(log=None):
 # --------------------------------------------------------------------------- #
 
 
-def probe_channels(channels, log=None, duty=255, settle=2.5, sample=0.5):
-    """Spin each header up briefly to find out whether a fan is attached.
+#: Duties used for the two-point calibration: ~30 % and full speed.
+PROBE_DUTIES = (76, 255)
+
+
+def _sample_peak(channel, duration, sample=0.3):
+    """Highest tach reading over ``duration`` seconds."""
+    peak = 0
+    deadline = time.time() + duration
+    while time.time() < deadline:
+        time.sleep(sample)
+        value = channel.rpm
+        if value and value > peak:
+            peak = value
+    return peak
+
+
+def diagnose_unresponsive(channel, entry):
+    """Explain why a header that reports a fan does not follow the duty cycle.
+
+    Ordered by how specific the evidence is: a register that refuses the write
+    is a different problem from a register that accepts it while the fan does
+    not move.
+    """
+    hints = []
+    index = channel.index
+    high = entry.get("duty_high")
+    readback = entry.get("pwm_readback")
+
+    if entry.get("pwm_mode") == 0:
+        hints.append(
+            "该通道是 DC 电压调速模式（pwm%d_mode=0）。部分主板在这个模式下"
+            "不响应占空比写入，可以切到 PWM 模式后重测：echo 1 > %s"
+            % (index, channel.path_mode))
+
+    if entry.get("enable_writable") is False:
+        hints.append(
+            "写 pwm%d_enable=%s 被驱动拒绝，芯片没能进入手动模式，仍由 BIOS 的"
+            "自动曲线控制 —— 这种情况下写占空比不会有任何效果。"
+            % (index, channel.profile.manual))
+    elif entry.get("pwm_writable") is False:
+        hints.append("写 pwm%d 被驱动拒绝（权限或驱动不支持）。" % index)
+    elif readback is not None and high is not None and readback != high:
+        hints.append(
+            "写入占空比 %s 但读回 %s：寄存器没有接受写入，说明驱动或芯片忽略了它。"
+            % (high, readback))
+    else:
+        hints.append(
+            "寄存器写入与读回都正常，但转速不变 —— 问题多半在风扇或接线："
+            "3 针（DC）风扇插在 PWM 接头上时第 4 根 PWM 线不起作用，风扇会恒速运转；"
+            "也可能是该接头的 PWM 针脚没有实际接到插座。"
+            "换一个接头、或换一把 4 针 PWM 风扇即可确认。")
+
+    hints.append(
+        "还要确认 BIOS 没有锁死风扇控制：部分主板（尤其 ASUS）会周期性重新接管 "
+        "SuperIO，可以查 dmesg 里有没有 ACPI resource conflict。")
+    return hints
+
+
+#: Calibration runs from full speed down to *zero*.  Starting at 0 % is the
+#: whole point: a fan that supports a stop mode reads 0 RPM there, which both
+#: proves the PWM really reaches the fan and tells you the lowest speed you can
+#: safely ask for.
+PROBE_LOW_DUTY = 0
+PROBE_HIGH_DUTY = 255
+
+
+def probe_channels(channels, log=None, low_duty=PROBE_LOW_DUTY,
+                   high_duty=PROBE_HIGH_DUTY, high_settle=2.5,
+                   low_settle=3.5, window=1.2):
+    """Two-point calibration: measure RPM at full duty and at a low duty.
 
     A stopped fan reads 0 RPM whether or not one is plugged in, so passive
-    scanning cannot tell an empty header from an idle fan.  Running each header
-    at full speed for a couple of seconds settles it -- full speed is the safe
-    direction, and every header is put back exactly as it was afterwards.
+    scanning cannot tell an empty header from an idle fan.  A single sample
+    only proves a fan exists; two points also prove the PWM register actually
+    *controls* it, which is the question that matters when a fan clearly does
+    not follow its curve.
+
+    Full speed is measured first: that identifies empty headers in one step and
+    spares them the much slower spin-down measurement.  The second point is
+    0 %, which is what reveals a fan that can be stopped.
+
+    The waits are generous because a large chassis fan can take several seconds
+    to change speed, and reading too early returns the *previous* speed -- which
+    produced nonsense like "1730 RPM at 30 %, 1397 RPM at 100 %".
     """
     results = []
     for channel in channels:
         snapshot = (channel.enable, channel.duty)
-        before = channel.rpm or 0
-        peak = before
-        error = None
-        applied = False
+        entry = {
+            "channel": channel.index,
+            "controllable": channel.controllable,
+            "temp_sel": channel.temp_sel,
+            "temp_sel_label": channel.temp_sel_label,
+            "rpm_before": channel.rpm or 0,
+            "rpm_high": None,
+            "rpm_low": None,
+            "duty_high": high_duty,
+            "duty_low": low_duty,
+            "rpm_min": None,
+            "rpm_max": None,
+            "detected": False,
+            "responsive": False,
+            "stops": False,
+            "pwm_mode": channel.mode,
+            "pwm_writable": None,
+            "pwm_readback": None,
+            "enable_writable": None,
+            "hints": [],
+            "error": None,
+        }
         if channel.controllable:
             try:
-                write_text(channel.path_enable, channel.profile.manual)
-                write_text(channel.path_pwm, duty)
-                applied = True
-                deadline = time.time() + settle
-                while time.time() < deadline:
-                    time.sleep(sample)
-                    value = channel.rpm
-                    if value and value > peak:
-                        peak = value
-            except OSError as exc:
-                error = str(exc)
-            finally:
-                if applied:
+                # point 1: full speed, capturing whether each write is accepted
+                try:
+                    write_text(channel.path_enable, channel.profile.manual)
+                    entry["enable_writable"] = True
+                except OSError as exc:
+                    entry["enable_writable"] = False
+                    entry["error"] = str(exc)
+                try:
+                    write_text(channel.path_pwm, high_duty)
+                    entry["pwm_writable"] = True
+                    entry["pwm_readback"] = channel.duty
+                except OSError as exc:
+                    entry["pwm_writable"] = False
+                    entry["error"] = entry["error"] or str(exc)
+
+                time.sleep(high_settle)
+                entry["rpm_high"] = _sample_peak(channel, window)
+
+                # point 2: only worth doing when something actually spins
+                if entry["rpm_high"]:
                     try:
-                        restore_channel(channel, snapshot, log)
-                    except OSError as exc:
-                        error = error or str(exc)
-                        if log:
-                            log("fan%d: could not restore after probe: %s"
-                                % (channel.index, exc))
-        results.append(
-            {
-                "channel": channel.index,
-                "rpm_before": before,
-                "rpm_peak": peak,
-                "detected": peak > 0,
-                "controllable": channel.controllable,
-                "temp_sel": channel.temp_sel,
-                "temp_sel_label": channel.temp_sel_label,
-                "error": error,
-            }
-        )
+                        write_text(channel.path_pwm, low_duty)
+                    except OSError:
+                        pass
+                    time.sleep(low_settle)
+                    entry["rpm_low"] = _sample_peak(channel, window)
+            except OSError as exc:
+                entry["error"] = entry["error"] or str(exc)
+            finally:
+                try:
+                    restore_channel(channel, snapshot, log)
+                except OSError as exc:
+                    entry["error"] = entry["error"] or str(exc)
+                    if log:
+                        log("fan%d: could not restore after probe: %s"
+                            % (channel.index, exc))
+
+        seen = [v for v in (entry["rpm_before"], entry["rpm_low"],
+                            entry["rpm_high"]) if v is not None]
+        if seen:
+            entry["rpm_min"] = min(seen)
+            entry["rpm_max"] = max(seen)
+        entry["detected"] = bool(entry["rpm_max"])
+        if entry["rpm_high"] and entry["rpm_low"] is not None:
+            delta = entry["rpm_high"] - entry["rpm_low"]
+            entry["responsive"] = delta >= max(40, 0.05 * entry["rpm_high"])
+            # 0 RPM at 0 % duty means the fan really does stop when asked
+            entry["stops"] = bool(entry["rpm_high"] and entry["rpm_low"] == 0)
+
+        # A header that reports a fan but ignores the duty cycle is the single
+        # most confusing failure mode, so explain it right where it is seen.
+        if entry["detected"] and not entry["responsive"]:
+            entry["hints"] = diagnose_unresponsive(channel, entry)
+
+        results.append(entry)
         if log:
-            log("probe fan%d: before=%s peak=%s detected=%s%s"
-                % (channel.index, before, peak, peak > 0,
-                   "" if not error else " error=%s" % error))
+            log("probe fan%d: %s RPM @%s%% / %s RPM @%s%%  detected=%s responsive=%s "
+                "stops=%s mode=%s%s"
+                % (channel.index,
+                   entry["rpm_high"] if entry["rpm_high"] is not None else "-",
+                   round(high_duty * 100.0 / 255.0),
+                   entry["rpm_low"] if entry["rpm_low"] is not None else "-",
+                   round(low_duty * 100.0 / 255.0),
+                   entry["detected"], entry["responsive"], entry["stops"],
+                   "DC" if entry["pwm_mode"] == 0 else
+                   ("PWM" if entry["pwm_mode"] == 1 else "?"),
+                   "" if not entry["error"] else " error=%s" % entry["error"]))
+            for hint in entry["hints"]:
+                log("  fan%d hint: %s" % (channel.index, hint))
     return results
 
 
@@ -599,33 +748,168 @@ def read_cpu():
     return None, None
 
 
-def read_gpu():
-    """GPU temperature in degrees Celsius, or ``(None, None)``."""
-    for path, name in hwmon_nodes():
-        if name not in GPU_DRIVERS:
-            continue
-        value = _labelled_temp(path, ("edge", "junction"))
-        if value is None:
-            value = _max_temp_in(path)
-        if value:
-            return value / 1000.0, "%s (hwmon)" % name
+_PCI_LABEL_CACHE = {}
 
-    exe = shutil.which("nvidia-smi")
+
+def _pci_address(hwmon_path):
+    """PCI address (``0000:07:00.0``) behind a hwmon node, if there is one."""
+    device = os.path.realpath(os.path.join(hwmon_path, "device"))
+    match = re.search(r"/([0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f])$", device)
+    return match.group(1) if match else None
+
+
+def _pci_label(address):
+    """Marketing name for a PCI address, resolved once through lspci.
+
+    Without this a GPU is only ever called "i915" or "amdgpu", which says
+    nothing about *which* card it is -- unhelpful on a box that has two.
+    """
+    if not address:
+        return None
+    if address in _PCI_LABEL_CACHE:
+        return _PCI_LABEL_CACHE[address]
+
+    label = None
+    exe = shutil.which("lspci")
     if exe:
         try:
+            proc = subprocess.run([exe, "-mm", "-s", address],
+                                  capture_output=True, timeout=10, check=False)
+            if proc.returncode == 0:
+                fields = re.findall(r'"([^"]*)"', proc.stdout.decode("utf-8", "replace"))
+                if len(fields) >= 3:
+                    vendor = fields[1].split()[0] if fields[1] else ""
+                    device = fields[2].strip()
+                    if vendor and device and not device.lower().startswith(vendor.lower()):
+                        label = "%s %s" % (vendor, device)
+                    else:
+                        label = device or None
+                if label:
+                    label = "%s (%s)" % (label, address)
+        except (OSError, subprocess.SubprocessError):
+            label = None
+    _PCI_LABEL_CACHE[address] = label
+    return label
+
+
+class GpuSensor:
+    """One GPU temperature source."""
+
+    def __init__(self, ident, hwmon, driver, label):
+        self.id = ident
+        self.hwmon = hwmon
+        self.driver = driver
+        self.label = label
+        self.current = None
+
+    def temperature(self):
+        value = None
+        if self.hwmon:
+            raw = _labelled_temp(self.hwmon, ("edge", "junction"))
+            if raw is None:
+                raw = _max_temp_in(self.hwmon)
+            if raw:
+                value = raw / 1000.0
+        self.current = value
+        return value
+
+    def as_dict(self):
+        return {
+            "id": self.id,
+            "label": self.label,
+            "driver": self.driver,
+            "temperature": self.current,
+        }
+
+
+class NvidiaGpuSensor(GpuSensor):
+    """A GPU with no hwmon node, readable only through nvidia-smi."""
+
+    CACHE_SECONDS = 10.0
+
+    def __init__(self, ident, index, label):
+        GpuSensor.__init__(self, ident, None, "nvidia-smi", label)
+        self.index = index
+        self._read_at = 0.0
+
+    def temperature(self):
+        now = time.time()
+        if now - self._read_at < self.CACHE_SECONDS:
+            return self.current
+        self._read_at = now
+        exe = shutil.which("nvidia-smi")
+        if not exe:
+            self.current = None
+            return None
+        try:
             proc = subprocess.run(
-                [exe, "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
+                [exe, "-i", str(self.index), "--query-gpu=temperature.gpu",
+                 "--format=csv,noheader,nounits"],
                 capture_output=True, timeout=15, check=False,
             )
         except (OSError, subprocess.SubprocessError):
-            return None, None
-        if proc.returncode == 0:
-            values = [int(line) for line in
-                      proc.stdout.decode("utf-8", "replace").splitlines()
-                      if line.strip().isdigit()]
-            if values:
-                return float(max(values)), "nvidia-smi"
-    return None, None
+            self.current = None
+            return None
+        text = proc.stdout.decode("utf-8", "replace").strip()
+        self.current = float(text) if text.isdigit() else None
+        return self.current
+
+
+def _nvidia_sensors():
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return []
+    try:
+        proc = subprocess.run(
+            [exe, "--query-gpu=index,name", "--format=csv,noheader"],
+            capture_output=True, timeout=15, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    sensors = []
+    for line in proc.stdout.decode("utf-8", "replace").splitlines():
+        parts = [item.strip() for item in line.split(",")]
+        if len(parts) < 2 or not parts[0].isdigit():
+            continue
+        sensors.append(NvidiaGpuSensor("nvidia%s" % parts[0], int(parts[0]), parts[1]))
+    return sensors
+
+
+def list_gpu_sensors():
+    """Every GPU that exposes a readable temperature, kernel driver first."""
+    sensors = []
+    seen = set()
+    for path, name in hwmon_nodes():
+        if name not in GPU_DRIVERS:
+            continue
+        address = _pci_address(path)
+        ident = address or path
+        if ident in seen:
+            continue
+        seen.add(ident)
+        sensors.append(GpuSensor(ident, path, name, _pci_label(address) or name))
+    sensors.extend(_nvidia_sensors())
+    return sensors
+
+
+def read_gpu(sensors=None, selected=None):
+    """Hottest selected GPU, plus a short description, or ``(None, None)``."""
+    sensors = list_gpu_sensors() if sensors is None else sensors
+    readings = []
+    for sensor in sensors:
+        if selected and sensor.id not in selected:
+            continue
+        value = sensor.temperature()
+        if value is not None:
+            readings.append((value, sensor.label or sensor.id))
+    if not readings:
+        return None, None
+    value, label = max(readings)
+    if len(readings) == 1:
+        return value, label
+    return value, "%s @ %.0fC, %d GPU(s)" % (label, value, len(readings))
 
 
 # -- disks ------------------------------------------------------------------ #
@@ -649,14 +933,93 @@ def _block_name_for_hwmon(hwmon):
     return None
 
 
+def _clean_serial(text):
+    """Tidy a kernel serial/wwid string.
+
+    A t10 wwid pads with the two characters ``\0`` (backslash + zero), not with
+    NUL bytes, so both forms have to be stripped or the padding shows up in the
+    UI as ``\0\0\0\0``.
+    """
+    if not text:
+        return None
+    cleaned = text.replace("\x00", " ").replace("\\0", " ")
+    cleaned = " ".join(cleaned.split())
+    return cleaned or None
+
+
+def _sysfs_serial(blk):
+    """Stable hardware identifier published by the kernel for a block device.
+
+    SATA/SAS expose a ``wwid`` (``naa.…`` or ``t10.…``), NVMe exposes a
+    ``serial``.  Either is tied to the drive itself rather than to the order in
+    which the kernel happened to enumerate it.
+    """
+    if not blk:
+        return None
+    base = "/sys/block/%s/device" % blk
+    for name in ("wwid", "serial"):
+        cleaned = _clean_serial(read_text(os.path.join(base, name)))
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _disk_by_id(blk):
+    """udev's ``/dev/disk/by-id`` name for a block device, if there is one."""
+    if not blk or not os.path.isdir("/dev/disk/by-id"):
+        return None
+    try:
+        entries = os.listdir("/dev/disk/by-id")
+    except OSError:
+        return None
+    matches = []
+    for name in entries:
+        if name.startswith(("wwn-", "dm-", "lvm-", "md-", "usb-", "virtio-")) \
+                or "part" in name:
+            continue
+        try:
+            target = os.path.realpath(os.path.join("/dev/disk/by-id", name))
+        except OSError:
+            continue
+        if os.path.basename(target) == blk:
+            matches.append(name)
+    if not matches:
+        return None
+    matches.sort(key=len)
+    return matches[0]
+
+
+#: udev by-id prefixes whose remainder reads as "model_serial".
+_BY_ID_PREFIXES = ("ata-", "scsi-", "sata-", "nvme-", "mmc-")
+
+
 def _disk_identity(blk):
-    """Human readable model for a block device, if cheaply available."""
+    """Model and serial for a block device, for display next to its name.
+
+    ``/dev/disk/by-id`` names carry the full model and serial (sysfs truncates
+    the model to 16 characters), so they make the friendliest label.  EUI-only
+    names are skipped in favour of model + serial, which is readable.
+    """
     if not blk:
         return blk
-    model = read_text("/sys/block/%s/device/model" % blk)
-    if model:
-        return "%s (%s)" % (blk, model.strip())
-    return blk
+
+    by_id = _disk_by_id(blk)
+    if by_id and "eui." not in by_id and "wwn-" not in by_id:
+        text = by_id
+        for prefix in _BY_ID_PREFIXES:
+            if text.startswith(prefix):
+                text = text[len(prefix):]
+                break
+        text = text.replace("_", " ").strip()
+        if text:
+            return text
+
+    model = (read_text("/sys/block/%s/device/model" % blk) or "").strip()
+    serial = _sysfs_serial(blk) or ""
+    if len(serial) > 28:                       # a padded t10 wwid
+        serial = serial.split()[-1]
+    parts = [part for part in (model, serial) if part]
+    return " · ".join(parts) if parts else blk
 
 
 def smartctl_temperature(device):
@@ -690,13 +1053,21 @@ def smartctl_temperature(device):
 
 
 class DiskSensor:
-    """One disk temperature source."""
+    """One disk temperature source.
 
-    def __init__(self, device, hwmon, driver, label):
+    ``id`` is the stable identity (``/dev/disk/by-id`` name, or the kernel's
+    wwid/serial) and is what gets stored in the configuration.  ``device`` is
+    only the current kernel name (``sda``), which changes when disks are
+    re-cabled or the boot order changes -- selecting by that would silently
+    start following a *different* drive.
+    """
+
+    def __init__(self, device, hwmon, driver, label, ident=None):
         self.device = device
         self.hwmon = hwmon
         self.driver = driver
         self.label = label
+        self.id = ident or _disk_by_id(device) or _sysfs_serial(device) or device or hwmon
         self.current = None
 
     @property
@@ -721,7 +1092,7 @@ class DiskSensor:
 
     def as_dict(self):
         return {
-            "id": self.device or self.hwmon,
+            "id": self.id,
             "device": self.device,
             "label": self.label,
             "kind": self.kind,
@@ -767,7 +1138,9 @@ def read_hdd(sensors=None, selected=None):
     readings = []
     for sensor in sensors:
         value = sensor.temperature()
-        if selected and sensor.device not in selected:
+        # Accept the current device name too, so a configuration written before
+        # selections became stable keeps working until it is migrated.
+        if selected and sensor.id not in selected and sensor.device not in selected:
             continue
         if value is not None:
             readings.append((value, sensor.device))

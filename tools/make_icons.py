@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 LiuFudi
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 LiuFudi
+#
+# This file is part of fn-fancontrol, licensed under the GNU General Public
+# License version 3 or (at your option) any later version.
+# See the LICENSE file for the full text.
 """Generate the fn-fancontrol icon set.
 
 No imaging library is available on this box, so the PNGs are written directly

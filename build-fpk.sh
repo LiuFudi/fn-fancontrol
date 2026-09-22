@@ -1,6 +1,10 @@
 #!/bin/bash
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 LiuFudi
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 LiuFudi
+#
+# This file is part of fn-fancontrol, licensed under the GNU General Public
+# License version 3 or (at your option) any later version.
+# See the LICENSE file for the full text.
 # Build the fn-fancontrol .fpk and stamp the version into the artifact name.
 #
 # `fnpack build` always emits "<appname>.fpk" inside the source tree and offers
@@ -45,6 +49,11 @@ if [ -n "$CODE_VERSION" ] && [ "$CODE_VERSION" != "$VERSION" ]; then
     echo "build-fpk:          but manifest version=$VERSION - the API will report" >&2
     echo "build-fpk:          the wrong version; update the constant." >&2
 fi
+
+# Stale bytecode would end up inside the fpk; strip it before packing.  It
+# happens easily -- any `python3 -m py_compile` during development recreates it.
+find "$SOURCE" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+find "$SOURCE" -name '*.py[co]' -delete 2>/dev/null || true
 
 mkdir -p "$DIST"
 ARTIFACT="$DIST/${APPNAME}-${VERSION}.fpk"

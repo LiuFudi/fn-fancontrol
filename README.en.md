@@ -4,10 +4,10 @@
 
 **Drive your chassis and CPU fans from CPU, GPU and disk temperatures**
 
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-x86-lightgrey.svg)](#compatibility)
 [![fnOS](https://img.shields.io/badge/fnOS-%E2%89%A51.1.3100-green.svg)](https://www.fnnas.com/)
-[![Version](https://img.shields.io/badge/version-1.3.0-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.9.0-orange.svg)](CHANGELOG.md)
 
 [简体中文](README.md) · [English](README.en.md)
 
@@ -35,6 +35,13 @@ essentials: **temperature sources + control curves + persisted configuration**.
 |---|---|
 | 🌡️ **Three source types** | CPU (coretemp / k10temp / PECI), GPU (amdgpu / i915 / xe / nouveau / nvidia-smi), disks (drivetemp / nvme, `smartctl` fallback) |
 | 🔍 **Hardware wizard** | On first launch it lists **every** PWM channel the controller exposes, with live RPM and the temperature source the BIOS bound to it; a spin-up probe finds fans that were stopped |
+| ⏬ **Calibration includes 0 %** | Calibration drives the fan down to 0 %, so it also reveals whether the fan supports stopping; the result is stored and shown again next time |
+| 💽 **Disks selected by identity, not position** | Disks are identified by model + serial (`/dev/disk/by-id`) rather than `sda`/`sdb`, so re-cabling or changing the boot order keeps the selection on the same physical drive |
+| 🖥️ **One source per GPU** | A single GPU is one "GPU" card; several GPUs become 显卡1 / 显卡2 … each with its own switch and its model shown inside — no more two checkboxes fighting over the same thing |
+| 🎴 **GPUs identified by model** | GPUs are labelled with their PCI model (e.g. `Intel DG1 [Iris Xe Graphics]`) instead of a bare `i915`, and multiple cards can be selected individually |
+| 👁️ **Disabled sources still report** | A switched-off source is still read and displayed, marked "not used for control" — so "this machine has no such sensor" never gets confused with "you have not enabled it" |
+| 🎚️ **Two-point RPM calibration** | Hardware detection drives each header to 100 % and then to 0 %, reporting its **minimum/maximum RPM**, whether the PWM actually controls it, and whether the fan can be stopped (0 RPM at 0 %). The result is stored and shown again next time |
+| 📍 **Operating point on the curve** | The live temperature and duty are plotted on the curve, so you can see exactly where the fan is being asked to run |
 | 📈 **Visual curves** | One curve per fan, edited by dragging points in the browser, 2–8 points |
 | 🎛️ **Modes** | Temperature curve / fixed duty / BIOS automatic, per fan |
 | 🔀 **Max-of-many** | A fan can bind several sources and follows the hottest one |
@@ -287,11 +294,56 @@ If the UI names a chip such as `it87`, that model simply is not supported yet �
 </details>
 
 <details>
+<summary><b>The app shows Bad Gateway (502)</b></summary>
+
+The gateway cannot reach the app — it is either not running or its socket is missing:
+
+```bash
+sudo appcenter-cli status fn-fancontrol
+ls -la /var/apps/fn-fancontrol/target/app.sock    # the decisive check
+sudo /var/apps/fn-fancontrol/cmd/main status; echo "exit=$?"
+```
+
+If the status says running but the socket is gone, that is the defect fixed in 1.7.1: the PID
+file survives a reboot and the kernel re-uses PIDs, so after a reboot an unrelated service can
+inherit the old PID and a bare `kill -0` makes the app look alive, which stops the app center
+from starting it. Recover with:
+
+```bash
+sudo appcenter-cli stop fn-fancontrol
+sudo rm -f /var/apps/fn-fancontrol/var/app.pid
+sudo appcenter-cli start fn-fancontrol
+```
+</details>
+
+<details>
 <summary><b>RPM reads fine but changing PWM does nothing</b></summary>
 
-The channel may be in automatic mode and the driver refuses the override, or the BIOS has
-locked fan control. Try switching that fan to the "temperature curve" mode in the UI and
-watch whether the duty value changes.
+Run **Hardware detection → Active probe**: it measures each header at ~30 % and 100 % duty
+and, when a header reports a fan but ignores the duty cycle, it lists the reason directly.
+
+| Finding | What to do |
+| --- | --- |
+| Wrote duty X but read back Y | The register rejected the write; the driver or chip ignored it |
+| Writing `pwmN_enable` was refused | The chip never entered manual mode, so the BIOS curve is still in charge |
+| Mode shows **DC** | DC voltage control; some boards ignore duty writes in this mode. Try `echo 1 > .../pwmN_mode` and re-test |
+| Registers read back correctly but RPM never moves | The fan or the wiring: a 3-pin fan on a PWM header ignores the 4th wire and runs at a constant speed |
+
+Minimal manual check (`hwmonX` = the real node):
+
+```bash
+H=/sys/class/hwmon/hwmonX
+cat $H/pwm1_mode; cat $H/pwm1_enable
+echo 1 > $H/pwm1_enable
+echo 255 > $H/pwm1; sleep 5; cat $H/fan1_input
+echo 76  > $H/pwm1; sleep 5; cat $H/fan1_input
+```
+
+Same RPM both times means the write never reaches the fan; different means control works and
+the problem is the curve or the configuration.
+
+> Give the fan time to settle: a large chassis fan can take several seconds to slow down, and
+> reading too early returns the *previous* speed.
 </details>
 
 <details>
@@ -323,7 +375,7 @@ to `smartctl -n standby`, which by design does not wake a sleeping drive.
 
 ```
 fn-fancontrol/
-├── LICENSE                   MIT
+├── LICENSE                   GPL-3.0
 ├── README.md / README.en.md
 ├── CHANGELOG.md
 ├── build-fpk.sh              build + version-stamped artifact name
@@ -358,6 +410,34 @@ safely (fail-safe duty, handing fans back on stop, minimum duty limits), but **a
 liability for hardware damage or data loss** arising from its use. Evaluate the risk
 yourself, especially on a board that has not been verified.
 
+## Supporting the project
+
+The UI has a small ❤ entry in the top bar (it can be switched off in the config). It is
+**purely local**:
+
+- the QR codes and text come from `app/ui/donate.json` — no network access, no reporting,
+  no click tracking;
+- donating is entirely optional and **never changes any behaviour** of the software.
+
+If you build and ship your own copy, replace `app/ui/images/donate-wechat.png` and
+`donate-alipay.png` with your own codes, or set `"enabled": false` in `donate.json` to
+hide the entry completely.
+
 ## License
 
-[MIT License](LICENSE) © 2026 [LiuFudi](https://github.com/LiuFudi)
+[GNU General Public License v3.0 or later](LICENSE) © 2026 [LiuFudi](https://github.com/LiuFudi)
+
+fn-fancontrol is free software: you can redistribute it and/or modify it under the terms of
+the GNU General Public License as published by the Free Software Foundation, either version 3
+of the License, or (at your option) any later version.
+
+fn-fancontrol is distributed in the hope that it will be useful, but **WITHOUT ANY WARRANTY**;
+without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with this program.
+If not, see <https://www.gnu.org/licenses/>.
+
+> **About the licence change**: versions up to and including 1.9.0 were released under the
+> **MIT** licence. The change applies to new versions only — anyone who already obtained
+> those versions keeps the rights MIT granted them, and that cannot be revoked.

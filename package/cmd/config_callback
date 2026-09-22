@@ -1,4 +1,10 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 LiuFudi
+#
+# This file is part of fn-fancontrol, licensed under the GNU General Public
+# License version 3 or (at your option) any later version.
+# See the LICENSE file for the full text.
 # Configuration changes are applied live through the web UI; the daemon reloads
 # its config on every start, so there is nothing to do here.
 exit 0

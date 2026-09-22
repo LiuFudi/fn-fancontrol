@@ -4,10 +4,10 @@
 
 **按 CPU / 显卡 / 硬盘温度自动调节机箱与 CPU 风扇转速**
 
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-x86-lightgrey.svg)](#兼容性)
 [![fnOS](https://img.shields.io/badge/fnOS-%E2%89%A51.1.3100-green.svg)](https://www.fnnas.com/)
-[![Version](https://img.shields.io/badge/version-1.3.0-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.9.0-orange.svg)](CHANGELOG.md)
 
 [简体中文](README.md) · [English](README.en.md)
 
@@ -32,12 +32,19 @@
 |---|---|
 | 🌡️ **三种温度源** | CPU（coretemp / k10temp / PECI）、显卡（amdgpu / i915 / xe / nouveau / nvidia-smi）、硬盘（drivetemp / nvme / smartctl 兜底） |
 | 🔍 **硬件自检向导** | 首次启动自动列出控制器暴露的**全部** PWM 通道、实际转速与 BIOS 绑定的温度源，可逐个通道全速试转识别停转的风扇 |
+| ⏬ **标定含 0 %** | 标定会把风扇降到 0 %，因此能直接查出风扇是否支持停转（0 % 读到 0 RPM），标定结果会保存并在下次打开时回显 |
+| 💽 **按盘选择，不按位置** | 硬盘用型号 + 序列号标识（`/dev/disk/by-id`），不是 `sda`/`sdb`：换盘位、换线或改启动顺序后，选择依然对应同一块盘 |
+| 🖥️ **每块显卡一个温度源** | 单卡时是一张「显卡」卡片，多卡时自动拆成「显卡1 / 显卡2 …」，各自独立开关且卡内显示型号，不会再出现两个勾选框管同一件事 |
+| 🎴 **显卡按型号识别** | GPU 用 PCI 型号名标识（如 `Intel DG1 [Iris Xe Graphics]`），不是笼统的 `i915`；多张显卡可分别勾选 |
+| 👁️ **关掉也照样显示** | 未参与调速的温度源仍会读取并显示读数，不会把「机器没这个传感器」和「你没打开」混为一谈 |
+| 🎚️ **两点转速标定** | 硬件检测分别以约 30 % 与 100 % 转速测量转速，给出每路的**最低 / 最高转速**和「调速是否有效」，用来确认 PWM 真的生效 |
+| 📍 **工作点可视化** | 曲线上实时标出当前温度与转速对应的点，一眼看出风扇此刻被要求跑在哪里 |
 | 📈 **可视化曲线** | 每个风扇一条独立曲线，网页上直接拖动节点调整，支持 2–8 个节点 |
 | 🎛️ **多种模式** | 温度曲线 / 固定转速 / BIOS 自动，逐风扇独立设置 |
 | 🔀 **多源取最高** | 一个风扇可绑定多个温度源，取其中的最高值（例如机箱风扇同时看硬盘和 CPU） |
 | 🐢 **温度迟滞** | 降温超过设定幅度才允许降速，避免风扇反复变速的噪音 |
 | 💾 **硬盘友好** | 硬盘温度单独设置较长轮询间隔，减少唤醒休眠硬盘；smartctl 路径使用 `-n standby` 绝不唤醒 |
-| 🛡️ **失效保护** | 温度源全部失效时风扇升到设定的保护占空比，界面同时告警 |
+| 🛡️ **失效保护** | 温度源全部失效时风扇升到设定的保护转速，界面同时告警 |
 | ↩️ **安全交还** | 停止 / 卸载应用时自动把风扇交还主板 BIOS；从配置里移除某个风扇时，该通道精确恢复成接管前的状态 |
 | 🪶 **零依赖** | 后端纯 Python 3 标准库，前端原生 JS 无构建步骤，不需要 nodejs / python312 运行时应用 |
 
@@ -54,8 +61,8 @@
 主界面分三块：
 
 - **温度源** —— 三个开关（CPU / 显卡 / 硬盘），硬盘可单独勾选参与调速的盘，实时显示各自温度
-- **风扇** —— 每个通道一张卡片：转速、占空比、依据温度、模式、温度源、最低/最高占空比、可拖动的曲线图
-- **全局设置** —— 控制周期、硬盘轮询间隔、温度迟滞、失效保护占空比
+- **风扇** —— 每个通道一张卡片：转速、转速、依据温度、模式、温度源、最低/最高转速、可拖动的曲线图
+- **全局设置** —— 控制周期、硬盘轮询间隔、温度迟滞、失效保护转速
 
 ## 安装
 
@@ -135,7 +142,7 @@ CPU    Intel CC150  8C/16T
 IT8705F ≤ rev F、IT8712F ≤ rev G，新芯片写 `2` 会被驱动拒绝。应用对此的处理是
 逐级回退：先恢复接管前记录的状态 → 再试驱动自动模式 → 都不行就**直接给全速**。
 最后这一条很关键：没有它，一块不支持自动模式的 ITE 主板上「停止应用」会把风扇
-永久留在最后一次写入的低占空比上。
+永久留在最后一次写入的低转速上。
 
 **② ITE 主板常需要额外一步。** `it87` 驱动可能因 ACPI 已占用 SuperIO 的 I/O 端口
 而拒绝接管，`dmesg` 里会看到 `ACPI: resource conflict`：
@@ -186,7 +193,7 @@ python3 tools/make_icons.py
 ```
 
 **控制循环**每 `interval` 秒执行一次：读取启用的温度源 → 对每个风扇取其绑定源中的最高温 →
-代入曲线做线性插值得到百分比 → 按 `min_duty` / `max_duty` 夹取为 0–255 的占空比 →
+代入曲线做线性插值得到百分比 → 按 `min_duty` / `max_duty` 夹取为 0–255 的转速 →
 仅在数值变化时才写 `pwmN`。降速前还要通过温度迟滞检查。
 
 **为什么必须是 root**：写 `/sys/class/hwmon/*/pwm*`（`0644 root:root`）、
@@ -205,7 +212,7 @@ python3 tools/make_icons.py
   "interval": 3,            // 控制周期（秒）
   "hdd_interval": 60,       // 硬盘温度读取间隔（秒），调大可减少唤醒休眠硬盘
   "hysteresis": 3,          // 温度迟滞（°C）
-  "fail_safe_duty": 255,    // 所有温度源失效时的占空比
+  "fail_safe_duty": 255,    // 所有温度源失效时的转速
   "sources": {
     "cpu": true,
     "gpu": false,
@@ -218,7 +225,7 @@ python3 tools/make_icons.py
       "name": "CPU_FAN",
       "mode": "curve",      // curve | manual | auto
       "source": ["cpu"],    // 可多选，取最高温
-      "points": [[30, 20], [45, 35], [60, 60], [75, 100]],   // [温度°C, 占空比%]
+      "points": [[30, 20], [45, 35], [60, 60], [75, 100]],   // [温度°C, 转速%]
       "min_duty": 60,
       "max_duty": 255,
       "manual_duty": 128
@@ -282,10 +289,53 @@ I/O 端口，需要在启动参数里加 `acpi_enforce_resources=lax` 后重启�
 </details>
 
 <details>
+<summary><b>打开应用显示 Bad Gateway（502）</b></summary>
+
+网关连不上应用，通常是应用没起来或 socket 没建立：
+
+```bash
+sudo appcenter-cli status fn-fancontrol
+ls -la /var/apps/fn-fancontrol/target/app.sock    # 关键
+sudo /var/apps/fn-fancontrol/cmd/main status; echo "exit=$?"
+```
+
+若状态显示 running 但 socket 不存在，是 1.7.1 修掉的缺陷：PID 文件跨重启保留，
+而内核会复用 PID —— 重启后旧 PID 被别的服务占用时，只靠 `kill -0` 会误判应用仍在运行，
+应用中心便跳过启动。恢复：
+
+```bash
+sudo appcenter-cli stop fn-fancontrol
+sudo rm -f /var/apps/fn-fancontrol/var/app.pid
+sudo appcenter-cli start fn-fancontrol
+```
+</details>
+
+<details>
 <summary><b>能读到转速，但改 PWM 没反应</b></summary>
 
-该通道可能处于自动模式且驱动不接受改写，或 BIOS 锁定了风扇控制。
-可以先在界面上把该风扇的模式切到「温度曲线」，再看占空比数值是否变化。
+点**硬件检测 → 主动检测**：应用会以约 30% 与 100% 转速各测一次，并在「有转速但
+调不动」时直接列出原因。按提示对照即可：
+
+| 检测结果 | 处理 |
+| --- | --- |
+| 写入转速 X 但读回 Y | 寄存器没接受写入，驱动或芯片忽略了它 |
+| 写 `pwmN_enable` 被拒绝 | 芯片进不了手动模式，仍由 BIOS 自动曲线控制 |
+| 模式显示 **DC** | DC 电压调速模式，部分主板不响应转速写入。试 `echo 1 > .../pwmN_mode` 切到 PWM 后重测 |
+| 寄存器读写正常、转速却不变 | 问题在风扇或接线：3 针风扇插在 PWM 接头上时第 4 根线不起作用，风扇恒速运转 |
+
+手工最小排查（`hwmonX` 换成实际节点）：
+
+```bash
+H=/sys/class/hwmon/hwmonX
+cat $H/pwm1_mode; cat $H/pwm1_enable
+echo 1 > $H/pwm1_enable
+echo 255 > $H/pwm1; sleep 5; cat $H/fan1_input
+echo 76  > $H/pwm1; sleep 5; cat $H/fan1_input
+```
+
+两次转速相同 → 写入没到达风扇；不同 → 调速其实是好的，问题在曲线或配置上。
+
+> 判断转速是否稳定请给足等待时间：大风扇降速要好几秒，读太早会拿到**上一个转速**。
 </details>
 
 <details>
@@ -316,7 +366,7 @@ I/O 端口，需要在启动参数里加 `acpi_enforce_resources=lax` 后重启�
 
 ```
 fn-fancontrol/
-├── LICENSE                   MIT
+├── LICENSE                   GPL-3.0
 ├── README.md / README.en.md
 ├── CHANGELOG.md
 ├── build-fpk.sh              构建 + 版本化命名
@@ -347,10 +397,32 @@ fn-fancontrol/
 ## 免责声明
 
 本软件直接读写主板 SuperIO 的 PWM 寄存器。作者已尽力保证安全设计
-（失效保护、停止即交还 BIOS、最低占空比限制），但**因使用本软件导致的任何
+（失效保护、停止即交还 BIOS、最低转速限制），但**因使用本软件导致的任何
 硬件损坏或数据损失，作者不承担责任**。请自行评估风险，尤其是首次在非验证过的
 主板上使用时。
 
+## 打赏支持
+
+应用界面右上角有一个 ❤ 打赏入口（可以在配置里关掉）。它是**纯本地**的：
+
+- 二维码与文案来自 `app/ui/donate.json`，不联网、不上报、不统计点击；
+- 打赏完全自愿，**不影响任何功能**，也不会改变软件的任何行为。
+
+自行构建/分发的话，替换 `app/ui/images/donate-wechat.png` 与 `donate-alipay.png`
+即可换成自己的收款码；把 `donate.json` 里的 `enabled` 改成 `false` 则入口完全消失。
+
 ## 许可证
 
-[MIT License](LICENSE) © 2026 [LiuFudi](https://github.com/LiuFudi)
+[GNU General Public License v3.0 或更新版本](LICENSE) © 2026 [LiuFudi](https://github.com/LiuFudi)
+
+fn-fancontrol 是自由软件：你可以依照自由软件基金会发布的 GNU 通用公共许可证
+（第 3 版，或你选择的任何更新版本）的条款重新发布和/或修改它。
+
+fn-fancontrol 分发时希望它有用，但不提供**任何担保**，甚至不带对适销性或特定用途
+适用性的默示担保。详见 GNU 通用公共许可证。
+
+你应当已随本程序收到 GNU 通用公共许可证的副本；如果没有，
+请见 <https://www.gnu.org/licenses/>。
+
+> **关于许可证变更**：1.9.0 及更早的版本以 **MIT** 许可证发布。许可证变更仅对
+> 新版本生效 —— 已经获得那些版本的人依然保留 MIT 授予的权利，这一点无法撤销。

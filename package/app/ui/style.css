@@ -1,3 +1,10 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 LiuFudi
+ *
+ * This file is part of fn-fancontrol, licensed under the GNU General Public
+ * License version 3 or (at your option) any later version.
+ * See the LICENSE file for the full text.
+ */
 :root {
   --bg: #f4f6fa;
   --panel: #ffffff;
@@ -360,3 +367,46 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 0; }
   animation: spin .7s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* current operating point drawn on the curve */
+.curve-op { fill: var(--ok); stroke: var(--panel); stroke-width: 2; }
+.curve-op-line { stroke: var(--ok); stroke-width: 1; stroke-dasharray: 2 4; opacity: .55; }
+.source-hint { margin: 4px 0 0; font-size: 11px; color: var(--warn); }
+
+/* ------------------------------------------------------------------ donate -- */
+
+.modal-box-sm { max-width: 520px; }
+
+.donate-msg { margin: 0 0 16px; font-size: 13.5px; line-height: 1.7; }
+
+.qr-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  justify-content: center;
+  margin: 4px 0 16px;
+}
+.qr { margin: 0; text-align: center; }
+.qr img {
+  width: 180px;
+  height: 180px;
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 6px;
+}
+.qr figcaption { margin-top: 7px; font-size: 12.5px; color: var(--muted); }
+.qr-missing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 180px;
+  height: 180px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.donate-links { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }

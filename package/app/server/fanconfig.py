@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 LiuFudi
+#
+# This file is part of fn-fancontrol, licensed under the GNU General Public
+# License version 3 or (at your option) any later version.
+# See the LICENSE file for the full text.
 """Configuration schema, validation and the fan curve engine."""
 
 from __future__ import annotations
@@ -9,7 +15,11 @@ import tempfile
 
 CONFIG_VERSION = 1
 
-SOURCE_KEYS = ("cpu", "gpu", "hdd")
+#: Fixed source keys. GPUs are not listed here: each physical GPU becomes its
+#: own source named ``gpu:<pci-id>`` so that a multi-GPU machine gets one card
+#: per GPU instead of a single "gpu" toggle plus a redundant device list.
+SOURCE_KEYS = ("cpu", "hdd")
+GPU_PREFIX = "gpu:"
 MODES = ("curve", "manual", "auto")
 
 #: Fallback curve: quiet when cool, full speed well before the CPU is unhappy.
@@ -30,9 +40,10 @@ DEFAULT_CONFIG = {
     "fail_safe_duty": 255,
     "sources": {
         "cpu": True,
-        "gpu": False,
+        "gpus": {},
         "hdd": True,
         "hdd_devices": [],
+
     },
     "fans": [],
 }
@@ -89,16 +100,90 @@ def _clean_points(raw, fallback):
     return points
 
 
-def _clean_sources(raw):
+def _clean_calibration(raw):
+    """Validate a stored RPM calibration record, or drop it."""
+    if not isinstance(raw, dict):
+        return None
+    record = {}
+    for key in ("duty_low", "rpm_low", "duty_high", "rpm_high",
+                "rpm_min", "rpm_max"):
+        try:
+            record[key] = int(raw.get(key))
+        except (TypeError, ValueError):
+            return None
+    record["responsive"] = bool(raw.get("responsive"))
+    record["stops"] = bool(raw.get("stops"))
+    try:
+        record["at"] = int(raw.get("at"))
+    except (TypeError, ValueError):
+        record["at"] = None
+    return record
+
+
+def calibration_as_result(channel, calibration):
+    """Reshape a stored calibration into a probe result.
+
+    Without this the detection table is empty every time the daemon restarts or
+    the app is upgraded, which makes a perfectly intact calibration look as if
+    it had been lost.
+    """
+    if not calibration:
+        return None
+    return {
+        "channel": channel,
+        "rpm_high": calibration.get("rpm_high"),
+        "rpm_low": calibration.get("rpm_low"),
+        "duty_high": calibration.get("duty_high"),
+        "duty_low": calibration.get("duty_low"),
+        "rpm_min": calibration.get("rpm_min"),
+        "rpm_max": calibration.get("rpm_max"),
+        "detected": bool(calibration.get("rpm_max")),
+        "responsive": bool(calibration.get("responsive")),
+        "stops": bool(calibration.get("stops")),
+        "pwm_mode": None,
+        "pwm_writable": None,
+        "pwm_readback": None,
+        "enable_writable": None,
+        "hints": [],
+        "error": None,
+        "stored": True,
+        "at": calibration.get("at"),
+    }
+
+
+def _clean_sources(raw, gpu_keys=None):
+    """Normalise one fan's source list.
+
+    ``gpu_keys`` is the list of ``gpu:<id>`` keys present on this machine.  The
+    legacy ``"gpu"`` alias is expanded into them so configs written before each
+    GPU became its own source keep working.
+    """
     if isinstance(raw, str):
         raw = [raw]
     if not isinstance(raw, (list, tuple)):
-        return ["cpu"]
-    picked = [key for key in raw if key in SOURCE_KEYS]
+        raw = ["cpu"]
+
+    picked = []
+    for item in raw:
+        key = str(item)
+        if key in SOURCE_KEYS:
+            if key not in picked:
+                picked.append(key)
+        elif key.startswith(GPU_PREFIX):
+            if key not in picked:
+                picked.append(key)
+        elif key == "gpu":
+            if gpu_keys is None:
+                if "gpu" not in picked:
+                    picked.append("gpu")
+            else:
+                for gpu in gpu_keys:
+                    if gpu not in picked:
+                        picked.append(gpu)
     return picked or ["cpu"]
 
 
-def normalise(config, channels=None):
+def normalise(config, channels=None, gpu_keys=None):
     """Return a validated deep copy of ``config``, filling in every default."""
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     if isinstance(config, dict):
@@ -110,12 +195,31 @@ def normalise(config, channels=None):
 
     sources = config.get("sources") if isinstance(config, dict) else None
     if isinstance(sources, dict):
-        for key in ("cpu", "gpu", "hdd"):
+        for key in ("cpu", "hdd"):
             if key in sources:
                 cfg["sources"][key] = bool(sources[key])
         devices = sources.get("hdd_devices")
         if isinstance(devices, (list, tuple)):
             cfg["sources"]["hdd_devices"] = [str(d) for d in devices]
+
+        # Per-GPU switches.  Accepts the new {"gpus": {id: bool}} shape and
+        # migrates the old {"gpu": bool, "gpu_devices": [...]} pair.
+        gpus = {}
+        raw_gpus = sources.get("gpus")
+        if isinstance(raw_gpus, dict):
+            for key, value in raw_gpus.items():
+                gpus[str(key)] = bool(value)
+        elif gpu_keys:
+            legacy_on = bool(sources.get("gpu"))
+            legacy = sources.get("gpu_devices")
+            wanted = [str(d) for d in legacy] if isinstance(legacy, (list, tuple)) and legacy \
+                else list(gpu_keys)
+            for key in gpu_keys:
+                gpus[key] = bool(legacy_on and key in wanted)
+        if gpu_keys is not None:
+            # drop entries for GPUs that are no longer present
+            gpus = {k: v for k, v in gpus.items() if k in gpu_keys}
+        cfg["sources"]["gpus"] = gpus
 
     known = {channel.index for channel in channels} if channels else None
     fans = []
@@ -139,13 +243,13 @@ def normalise(config, channels=None):
         if min_duty > max_duty:
             min_duty, max_duty = max_duty, min_duty
 
-        is_cpu = "cpu" in _clean_sources(entry.get("source"))
+        is_cpu = "cpu" in _clean_sources(entry.get("source"), gpu_keys)
         fans.append(
             {
                 "channel": channel,
                 "name": str(entry.get("name") or ("fan%d" % channel))[:32],
                 "mode": mode,
-                "source": _clean_sources(entry.get("source")),
+                "source": _clean_sources(entry.get("source"), gpu_keys),
                 "points": _clean_points(
                     entry.get("points"),
                     DEFAULT_CPU_POINTS if is_cpu else DEFAULT_HDD_POINTS,
@@ -153,6 +257,7 @@ def normalise(config, channels=None):
                 "min_duty": min_duty,
                 "max_duty": max_duty,
                 "manual_duty": _clamp_int(entry.get("manual_duty"), 0, 255, 128),
+                "calibration": _clean_calibration(entry.get("calibration")),
             }
         )
     fans.sort(key=lambda fan: fan["channel"])
@@ -219,7 +324,8 @@ def default_fan_for_channel(channel):
     }
 
 
-def build_default_config(channels, setup_complete=False, only_present=True):
+def build_default_config(channels, setup_complete=False, only_present=True,
+                         gpu_keys=None):
     """Starting point for the fans found on this machine.
 
     ``only_present`` skips headers that have never reported a tach signal; the
@@ -233,7 +339,7 @@ def build_default_config(channels, setup_complete=False, only_present=True):
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     cfg["fans"] = fans
     cfg["setup_complete"] = bool(setup_complete)
-    return normalise(cfg, channels)
+    return normalise(cfg, channels, gpu_keys)
 
 
 # --------------------------------------------------------------------------- #
@@ -241,14 +347,14 @@ def build_default_config(channels, setup_complete=False, only_present=True):
 # --------------------------------------------------------------------------- #
 
 
-def load(path, channels=None):
+def load(path, channels=None, gpu_keys=None):
     """Read the config from ``path``; a missing or broken file yields defaults."""
     try:
         with open(path, "r") as handle:
             raw = json.load(handle)
     except (OSError, ValueError):
         return None
-    return normalise(raw, channels)
+    return normalise(raw, channels, gpu_keys)
 
 
 def save(path, config):
