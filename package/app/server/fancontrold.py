@@ -44,7 +44,7 @@ import fanhardware  # noqa: E402
 APP_NAME = "fn-fancontrol"
 # Must be kept in step with the ``version`` field of the package manifest:
 # the app center does not export TRIM_APPVER to the daemon.
-VERSION = "1.10.5"
+VERSION = "1.10.6"
 
 MIME_TYPES = {
     ".html": "text/html; charset=utf-8",

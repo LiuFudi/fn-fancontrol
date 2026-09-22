@@ -434,12 +434,8 @@ yourself, especially on a board that has not been verified.
 
 The UI has a small ❤ entry in the top bar. It is **purely local**:
 
-- the wording comes from `app/ui/donate.json` — no network access, no reporting,
-  no click tracking;
+- no network access, no reporting, no click tracking;
 - donating is entirely optional and **never changes any behaviour** of the software.
-
-The entry is **always visible** — there is no switch to turn it off. It is a single small
-button: it never pops up on its own and never interrupts anything you are doing.
 
 ## License
 
