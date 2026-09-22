@@ -170,6 +170,59 @@ main { max-width: 1180px; margin: 0 auto; padding: 20px; display: grid; gap: 18p
 .disk .dt { font-variant-numeric: tabular-nums; font-weight: 600; }
 .disk.hot .dt { color: var(--err); }
 
+/* The three primary sources get more room than the readings that follow them. */
+.sources.main { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.sources.main .source { padding: 16px 17px; }
+.sources.main .source-name { font-size: 14.5px; }
+.sources.main .source-temp { font-size: 34px; margin-top: 8px; }
+
+/* A heading inside a panel, with a right-aligned count. */
+.sub-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  margin: 18px 0 9px; font-size: 14px; font-weight: 650;
+}
+.sub-head:first-child { margin-top: 0; }
+.sub-head span { font-size: 11.5px; font-weight: 400; color: var(--muted); }
+
+/* Folded-away sections: secondary sources, or rows with nothing to report. */
+.fold { margin-top: 12px; }
+.fold > summary {
+  cursor: pointer; font-size: 12.5px; color: var(--muted);
+  padding: 8px 12px; border: 1px solid var(--line); border-radius: 9px;
+  background: var(--panel-2); list-style: none;
+}
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary::before { content: '▸ '; }
+.fold[open] > summary::before { content: '▾ '; }
+.fold > summary:hover { color: var(--text); }
+.fold[open] > summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.fold > .sources, .fold > .sensor-list { margin-top: 12px; }
+.fold[open] > .chan-table { margin-top: 0; }
+.fold[open] > .chan-table thead th:first-child { border-top-left-radius: 0; }
+
+/* A fold inside a fan card is tighter than a panel-level one. */
+.fold-inline { margin-top: 8px; }
+.fold-inline > summary { padding: 5px 9px; font-size: 11.5px; border-radius: 7px; }
+.fold-inline > .checks { margin-top: 8px; padding: 0 2px; }
+
+/* The sensor inventory in the detection dialog. */
+.sensor-list { display: flex; flex-direction: column; }
+.sensor-row {
+  display: grid; grid-template-columns: minmax(120px, 1.1fr) minmax(70px, .8fr) 84px 1.4fr;
+  gap: 10px; align-items: baseline; padding: 5px 9px; font-size: 12.5px;
+  border-radius: 7px;
+}
+.sensor-row:nth-child(odd) { background: var(--panel-2); }
+.sensor-row .s-chip {
+  color: var(--muted); font-size: 11.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.sensor-row .s-temp { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+.sensor-row .s-why { color: var(--muted); font-size: 11.5px; }
+
+/* The first-run banner has to be read, so it is not a passing hint. */
+.warn-box { border-width: 2px; line-height: 1.75; }
+
 /* ------------------------------------------------------------------- fans -- */
 
 .fans { display: grid; gap: 14px; }
@@ -381,6 +434,33 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 0; }
 /* ------------------------------------------------------------------ donate -- */
 
 .modal-box-sm { max-width: 520px; }
+
+/* The detection wizard carries two long lists, so it gets the room to show
+   them next to each other instead of one below the other. */
+.modal-box-wide { width: min(1240px, 100%); max-height: 92vh; }
+.modal-box-wide .modal-body { padding: 16px 20px; }
+
+.setup-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+  gap: 20px;
+  align-items: start;
+  margin-top: 4px;
+}
+@media (max-width: 900px) { .setup-grid { grid-template-columns: 1fr; } }
+.setup-col { min-width: 0; }
+.setup-col > .sub-head:first-child { margin-top: 0; }
+.setup-hint { margin-top: 12px; }
+
+/* The wizard is read once; keep it tight enough to fit on a screen. */
+.modal-box-wide .hw-card { margin-bottom: 12px; }
+.modal-box-wide .sub-head { margin: 0 0 7px; font-size: 13px; }
+.modal-box-wide .sensor-row { font-size: 12px; padding: 3px 8px; }
+.modal-box-wide .chan-table th,
+.modal-box-wide .chan-table td { padding: 5px 7px; font-size: 12px; }
+.modal-box-wide .fold { margin-top: 9px; }
+.modal-box-wide .fold > summary { padding: 6px 10px; font-size: 12px; }
+.modal-box-wide .alert { font-size: 12.5px; }
 
 .donate-msg { margin: 0 0 16px; font-size: 13.5px; line-height: 1.7; }
 

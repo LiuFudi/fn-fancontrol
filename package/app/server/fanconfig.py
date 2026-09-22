@@ -52,6 +52,14 @@ DEFAULT_CONFIG = {
 
     },
     "fans": [],
+    #: The hardware this calibration was made against.  When it no longer
+    #: matches, the machine is not the one that was calibrated and the wizard
+    #: is re-opened rather than silently keeping numbers from other hardware.
+    "fingerprint": {},
+    #: Every probed channel's result, not only the managed ones.  The detection
+    #: table reads this back, so a calibration made once still shows after a
+    #: restart, an upgrade, or simply reloading the page.
+    "probe": {"at": None, "results": []},
 }
 
 
@@ -291,7 +299,63 @@ def normalise(config, channels=None, gpu_keys=None):
     cfg["hdd_interval"] = _clamp_int(cfg.get("hdd_interval"), 10, 3600, 60)
     cfg["hysteresis"] = _clamp_int(cfg.get("hysteresis"), 0, 20, 3)
     cfg["fail_safe_duty"] = _clamp_int(cfg.get("fail_safe_duty"), 0, 255, 255)
+    cfg["fingerprint"] = _clean_fingerprint(cfg.get("fingerprint"))
+    cfg["probe"] = _clean_probe(cfg.get("probe"))
     return cfg
+
+
+def _clean_fingerprint(raw):
+    """Keep the hardware fingerprint as ``{kind: [item, ...]}``."""
+    clean = {}
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            if isinstance(value, (list, tuple)):
+                items = [str(item) for item in value if str(item)]
+                if items:
+                    clean[str(key)] = items
+    return clean
+
+
+def _clean_probe(raw):
+    """Keep only the fields the detection table reads back."""
+    stored = {"at": None, "results": []}
+    if not isinstance(raw, dict):
+        return stored
+    try:
+        stored["at"] = float(raw.get("at"))
+    except (TypeError, ValueError):
+        stored["at"] = None
+
+    def whole(entry, key):
+        try:
+            value = entry.get(key)
+            return None if value is None else int(round(float(value)))
+        except (TypeError, ValueError):
+            return None
+
+    results = []
+    for entry in raw.get("results") or []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            channel = int(entry.get("channel"))
+        except (TypeError, ValueError):
+            continue
+        results.append({
+            "channel": channel,
+            "rpm_high": whole(entry, "rpm_high"),
+            "rpm_low": whole(entry, "rpm_low"),
+            "duty_high": whole(entry, "duty_high"),
+            "duty_low": whole(entry, "duty_low"),
+            "rpm_min": whole(entry, "rpm_min"),
+            "rpm_max": whole(entry, "rpm_max"),
+            "responsive": bool(entry.get("responsive")),
+            "stops": bool(entry.get("stops")),
+            "detected": bool(entry.get("detected")),
+        })
+    results.sort(key=lambda item: item["channel"])
+    stored["results"] = results
+    return stored
 
 
 def _clamp_int(value, low, high, fallback):

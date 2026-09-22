@@ -719,6 +719,50 @@ def _labelled_temp(hwmon, wanted):
 CPU_PREFERRED_LABELS = ("package id 0", "tctl", "tdie", "physical id 0", "package")
 
 
+def cpu_model():
+    """The CPU's model name, used to notice that the machine has changed."""
+    try:
+        with open("/proc/cpuinfo", "r") as handle:
+            for line in handle:
+                if line.lower().startswith("model name"):
+                    return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return None
+
+
+#: Fingerprint keys in report order, with the label each one reads as.
+#:
+#: Deliberately only these two.  A calibration describes the fan headers on a
+#: machine, so the things that can invalidate it are the CPU (which the headers
+#: may be bound to through PECI) and the set of headers itself.  Disks and GPUs
+#: come and go -- a USB enclosure plugged in for one afternoon -- and re-running
+#: a calibration over that would be noise rather than safety.
+FINGERPRINT_LABELS = (
+    ("cpu", "CPU"),
+    ("channels", "风扇通道"),
+)
+
+
+def describe_hardware_changes(before, after):
+    """What changed between two fingerprints, in words, or an empty list."""
+    if not isinstance(before, dict):
+        return []
+    changes = []
+    for key, label in FINGERPRINT_LABELS:
+        old = {str(item) for item in (before.get(key) or [])}
+        new = {str(item) for item in (after.get(key) or [])}
+        if old == new:
+            continue
+        added = sorted(new - old)
+        gone = sorted(old - new)
+        if added:
+            changes.append("%s 新增：%s" % (label, "、".join(added)))
+        if gone:
+            changes.append("%s 移除：%s" % (label, "、".join(gone)))
+    return changes
+
+
 def read_cpu():
     """CPU package temperature in degrees Celsius, or ``(None, None)``."""
     for path, name in hwmon_nodes():
@@ -1032,6 +1076,61 @@ def list_aux_sensors():
             ))
     found.sort(key=lambda entry: entry[:3])
     return [entry[3] for entry in found]
+
+
+def list_temp_inventory():
+    """Every hwmon temperature input, including the ones no source offers.
+
+    The detection screen shows this: on a board with an unusual sensor layout it
+    is the difference between "the app did not find it" and "the app found it
+    and deliberately left it out", and the second one is worth being able to
+    see.  Each row carries the reason it is unusable, if it is.
+    """
+    offered = {sensor.id for sensor in list_aux_sensors()}
+    rows = []
+    for path, chip in hwmon_nodes():
+        instance = _chip_instance(path, chip)
+        for input_path in glob.glob(os.path.join(path, "temp*_input")):
+            base = os.path.basename(input_path)[: -len("_input")]
+            try:
+                int(base[len("temp"):])
+            except ValueError:
+                continue
+            ident = "%s:%s" % (instance, base)
+            label = (read_text(os.path.join(path, base + "_label")) or "").strip()
+            raw = read_int(input_path)
+            value = None if raw is None or raw <= 0 else raw / 1000.0
+            reason = None
+            if value is None:
+                reason = "读数为 0 或无法读取"
+            elif value > AUX_MAX_PLAUSIBLE_C:
+                value = None
+                reason = "读数超出合理范围，按未接传感器处理"
+
+            if chip in CLAIMED_DRIVERS:
+                # Already read through the CPU / GPU / disk source, whatever the
+                # label happens to say -- coretemp's "Package id 0" is the CPU
+                # source's primary reading, not a duplicate to be dropped.
+                role = "dedicated"
+            elif ident in offered:
+                role = "aux"
+            else:
+                role = "skipped"
+                if reason is None:
+                    reason = ("与 CPU 温度重复，CPU 源已包含"
+                              if any(token in label.lower() for token in SKIP_LABELS)
+                              else "未采用")
+
+            rows.append({
+                "id": ident,
+                "chip": chip,
+                "label": label or base,
+                "temperature": value,
+                "role": role,
+                "reason": reason,
+            })
+    rows.sort(key=lambda row: (row["reason"] is not None, row["chip"], row["id"]))
+    return rows
 
 
 def read_aux(sensors=None, selected=None):

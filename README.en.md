@@ -92,8 +92,23 @@ sudo appcenter-cli start fn-fancontrol
 
 ## Usage
 
-1. **Check the sources** — the disk section lists every disk whose temperature can be read;
-   untick the ones that should not take part
+**The first launch requires a calibration run.** It is not a skippable intro: whether a given
+header actually obeys PWM is exactly the thing that is hardest to work out afterwards — the UI
+can look like it is controlling a fan while the fan ignores it, and the user is left thinking
+the app is broken. Until you have run the probe and applied it, the wizard will not close and
+the main interface is not reachable.
+
+The probe spins each header up to full and back down to 0 % once, giving the RPM range for that
+header and telling you whether it really responds to PWM and whether the fan can stop. **The one
+exception**: a machine with no controllable PWM channel at all (fans managed by an EC, driver
+missing, …) is not blocked — nothing can be set wrong there, so the wizard explains the
+diagnosis instead.
+
+Once you are in:
+
+1. **Check the sources** — CPU / GPU / disks are the three main cards; motherboard, DIMM and ACPI
+   zone readings live behind the “其它温度源” fold; per-disk temperatures and tick boxes are at the
+   bottom. Untick the disks that should not take part
 2. **Verify the header mapping** — the first install guesses from the BIOS configuration
    (headers watching a CPU core become CPU fans, the rest become chassis fans), but please
    **confirm which card is which physical header** by loading the CPU and watching which
@@ -101,6 +116,11 @@ sudo appcenter-cli start fn-fancontrol
 3. **Tune the curve** — drag the dots, double-click empty space to add a point,
    right-click a dot to delete it
 4. **Save** — applied immediately and written to disk
+
+> 🔍 **硬件检测** (top bar, any time) shows the complete inventory: every temperature sensor
+> including the ones with no reading — folded away with the reason (reads 0, out of plausible
+> range for an unattached input, duplicate of the CPU source) — and every PWM header, with the
+> silent ones folded as well.
 
 > 💡 **Suggested starting point**: chassis fan → `disks`, CPU fan → `CPU`.
 > A disk curve of `40 °C → 30 %`, `48 °C → 60 %`, `55 °C → 100 %` works well.

@@ -243,25 +243,22 @@ function livePercentFor(fan) {
   return Number(live.percent);
 }
 
-function renderSources() {
-  const box = $('#sources');
-  const list = sourcesList();
+function sourceCard(src) {
+  const on = !!src.enabled;
+  return '' +
+    '<div class="source' + (on ? ' on' : '') + '" data-source="' + esc(src.key) + '">' +
+      '<div class="source-head">' +
+        '<span class="source-name">' + esc(src.label) + '</span>' +
+        '<label class="switch"><input type="checkbox" data-src-toggle="' + esc(src.key) + '"' +
+          (on ? ' checked' : '') + '><span class="track"><span class="knob"></span></span></label>' +
+      '</div>' +
+      '<p class="source-temp"><b data-live="temp">' + fmtTemp(src.temperature, 0) + '</b><small>°C</small></p>' +
+      '<p class="source-detail" data-live="detail">' + esc(src.detail || '—') + '</p>' +
+      '<p class="source-hint' + (on ? ' hidden' : '') + '">未参与调速，仅显示读数</p>' +
+    '</div>';
+}
 
-  box.innerHTML = list.map((src) => {
-    const on = !!src.enabled;
-    return '' +
-      '<div class="source' + (on ? ' on' : '') + '" data-source="' + esc(src.key) + '">' +
-        '<div class="source-head">' +
-          '<span class="source-name">' + esc(src.label) + '</span>' +
-          '<label class="switch"><input type="checkbox" data-src-toggle="' + esc(src.key) + '"' +
-            (on ? ' checked' : '') + '><span class="track"><span class="knob"></span></span></label>' +
-        '</div>' +
-        '<p class="source-temp"><b data-live="temp">' + fmtTemp(src.temperature, 0) + '</b><small>°C</small></p>' +
-        '<p class="source-detail" data-live="detail">' + esc(src.detail || '—') + '</p>' +
-        '<p class="source-hint' + (on ? ' hidden' : '') + '">未参与调速，仅显示读数</p>' +
-      '</div>';
-  }).join('');
-
+function bindSourceToggles() {
   $$('[data-src-toggle]').forEach((input) => {
     input.addEventListener('change', () => {
       const key = input.dataset.srcToggle;
@@ -280,15 +277,49 @@ function renderSources() {
       card.classList.toggle('on', input.checked);
       const hint = $('.source-hint', card);
       if (hint) hint.classList.toggle('hidden', input.checked);
+      updateAuxSummary();
       renderFanSources();
     });
   });
 }
 
+/** Keep the fold's own label honest about what is inside it. */
+function updateAuxSummary() {
+  const summary = $('#aux-summary');
+  if (!summary) return;
+  const aux = sourcesList().filter((src) => src.kind === 'aux');
+  if (!aux.length) return;
+  const active = aux.filter((src) => src.enabled).length;
+  summary.textContent = '其它温度源（' + aux.length + ' 路' +
+    (active ? '，已启用 ' + active + ' 路' : '') + '）';
+}
+
+function renderSources() {
+  const list = sourcesList();
+  // CPU / GPU / disks stay as the three primary cards.  Everything else is a
+  // secondary reading -- motherboard, DIMMs, ACPI zones -- and lives behind a
+  // single fold so the panel does not turn into a wall of equal-looking cards.
+  const main = list.filter((src) => src.kind !== 'aux');
+  const aux = list.filter((src) => src.kind === 'aux');
+
+  $('#sources').innerHTML = main.map(sourceCard).join('') ||
+    '<p class="curve-hint">尚未检测到温度传感器。</p>';
+  $('#aux-sources').innerHTML = aux.map(sourceCard).join('');
+  $('#aux-fold').classList.toggle('hidden', !aux.length);
+  updateAuxSummary();
+  bindSourceToggles();
+}
+
 function renderDisks() {
   const box = $('#disks');
+  const head = $('#disk-head');
+  const note = $('#disk-note');
   const disks = (status && status.devices) || hardware.disks || [];
+  // The heading belongs to the readings below it, so it comes and goes with
+  // them rather than sitting there over an empty grid.
+  head.classList.toggle('hidden', !disks.length);
   if (!disks.length) { box.innerHTML = ''; return; }
+  if (note) note.textContent = '共 ' + disks.length + ' 块 · 勾选参与调速的盘';
   const selected = (cfg.sources && cfg.sources.hdd_devices) || [];
   const allOff = selected.length === 0;
 
@@ -323,6 +354,20 @@ function renderDisks() {
 }
 
 /* --------------------------------------------------------------- fan card -- */
+
+/** Keep a fan card's folded source group honest about what is selected. */
+function syncSourceFold(card, picked) {
+  const fold = $('.fold-inline', card);
+  if (!fold) return;
+  const summary = $('summary', fold);
+  const boxes = $$('.fan-src', fold);
+  if (!summary || !boxes.length) return;
+  const chosen = boxes.filter((box) => box.checked).length;
+  summary.textContent = '其它温度源（' + boxes.length + ' 路' +
+    (chosen ? '，已选 ' + chosen + ' 路' : '') + '）';
+  // A collapsed group that quietly holds an active source is a trap.
+  if (chosen) fold.open = true;
+}
 
 function bindRange(card, selector, labelSelector, apply) {
   const input = $(selector, card);
@@ -372,12 +417,28 @@ function buildFanCard(fan, channelInfo) {
               MODE_LABELS[key] + '</option>').join('') +
           '</select></div>' +
         '<div class="field"><span class="field-label">温度来源</span>' +
-          '<div class="checks">' +
-            sourcesList().map((src) =>
+          (function () {
+            const list = sourcesList();
+            const main = list.filter((src) => src.kind !== 'aux');
+            const aux = list.filter((src) => src.kind === 'aux');
+            const box = (src) =>
               '<label><input type="checkbox" class="fan-src" value="' + esc(src.key) + '"' +
               ((fan.source || []).indexOf(src.key) >= 0 ? ' checked' : '') + '>' +
-              esc(src.label) + '</label>').join('') +
-          '</div></div>' +
+              esc(src.label) + '</label>';
+            // Secondary readings fold away here too: a fan card listing every
+            // motherboard and ACPI input alongside CPU / GPU / disks buries the
+            // three that actually get used.
+            const picked = aux.filter((src) => (fan.source || []).indexOf(src.key) >= 0);
+            return '<div class="checks">' + main.map(box).join('') + '</div>' +
+              (aux.length
+                ? '<details class="fold fold-inline"' + (picked.length ? ' open' : '') + '>' +
+                  '<summary>其它温度源（' + aux.length + ' 路' +
+                  (picked.length ? '，已选 ' + picked.length + ' 路' : '') + '）</summary>' +
+                  '<div class="checks">' + aux.map(box).join('') + '</div>' +
+                  '</details>'
+                : '');
+          })() +
+        '</div>' +
         '<div class="field"><label>最低转速</label><div class="range-row">' +
           '<input type="range" class="fan-min" min="0" max="255" value="' + fan.min_duty + '">' +
           '<b class="fan-min-v">' + pct(fan.min_duty) + '</b></div></div>' +
@@ -425,6 +486,7 @@ function buildFanCard(fan, channelInfo) {
       let picked = $$('.fan-src', card).filter((i) => i.checked).map((i) => i.value);
       if (!picked.length) { input.checked = true; picked = [input.value]; }
       fan.source = picked;
+      syncSourceFold(card, picked);
     });
   });
 
@@ -681,7 +743,9 @@ async function boot() {
   await refresh();
   pollTimer = setInterval(refresh, 2000);
   if (status && status.needs_setup) {
-    showAlert('首次使用：请确认要管理的风扇通道，然后点击「应用并保存」。');
+    showAlert(setupForced()
+      ? '首次使用：请先完成风扇转速标定，然后点击「应用并保存」。'
+      : '首次使用：请确认要管理的风扇通道，然后点击「应用并保存」。', setupForced());
     openSetup();
   }
 }
@@ -740,6 +804,22 @@ function detectedOf(c) {
   return c.detected !== undefined ? c.detected : (c.rpm || 0) > 0;
 }
 
+//: On a first run the wizard is not advisory.  A header that turns out not to
+//: respond to PWM is exactly the problem the user cannot diagnose afterwards --
+//: the app would look like it were working while the fan ignored it -- so the
+//: calibration happens once before anything else is reachable.
+function setupForced() {
+  if (!status || !status.needs_setup) return false;
+  // Nothing to calibrate means nothing to block on: with no channels there is
+  // no fan to get wrong, and the wizard's job becomes explaining that instead.
+  return (hardware.channels || []).length > 0;
+}
+
+//: "Calibrated" means a probe has actually produced results.
+function setupProbed() {
+  return !!(setupState.results && setupState.results.length);
+}
+
 function openSetup() {
   setupState.selected = null;
   $('#setup').classList.remove('hidden');
@@ -766,6 +846,8 @@ function renderSetup() {
   const ctrl = (status && status.controller) || hardware.controller || null;
   const channels = setupChannels();
   const controllable = !status || status.controllable !== false;
+  const forced = setupForced();
+  const calibrated = setupProbed();
 
   if (setupState.selected === null) setupState.selected = defaultSelection(channels);
 
@@ -784,7 +866,7 @@ function renderSetup() {
   }
 
   const others = ((status && status.unsupported) || []);
-  const rows = channels.map((c) => {
+  const rowFor = (c) => {
     const has = detectedOf(c);
     const ok = c.controllable !== false;
     const sel = setupState.selected.has(c.channel);
@@ -820,9 +902,49 @@ function renderSetup() {
         '<td>' + verdict + '</td>' +
         '<td>' + src + '</td>' +
       '</tr>';
-  }).join('');
+  };
+
+  // Every header the controller exposes is listed.  The ones reporting nothing
+  // right now are folded away rather than dropped: a header with no RPM may
+  // simply have a stopped fan on it, and that is exactly what the probe is for.
+  const live = channels.filter((c) => detectedOf(c));
+  const idle = channels.filter((c) => !detectedOf(c));
+
+  const tableOf = (list) =>
+    '<table class="chan-table">' +
+      '<thead><tr><th style="width:34px"></th><th>通道</th>' +
+      '<th>最低转速 RPM</th><th>最高转速 RPM</th>' +
+      '<th title="DC = 电压调速，PWM = 脉宽调速">模式</th>' +
+      '<th>调速</th><th>BIOS 绑定的温度源</th></tr></thead>' +
+      '<tbody>' + list.map(rowFor).join('') + '</tbody>' +
+    '</table>';
 
   body.innerHTML =
+    (function () {
+      // Two reasons the wizard is blocking, and they read differently: a first
+      // run, or a machine that is no longer the one that was calibrated.
+      const changes = (status && status.hardware_changes) || [];
+      if (forced && changes.length) {
+        const shown = changes.slice(0, 8);
+        return '<div class="alert warn-box" style="margin:0 0 14px">' +
+          '<strong>检测到硬件变化，需要重新标定。</strong><br>' +
+          shown.map((line) => esc(line)).join('<br>') +
+          (changes.length > shown.length
+            ? '<br>…还有 ' + (changes.length - shown.length) + ' 项' : '') +
+          '<br>标定是针对具体机器的：硬件换了之后，原来的转速范围未必还成立。' +
+          '请重新点「主动检测」，确认每路风扇依然可控，再「应用并保存」。' +
+          '</div>';
+      }
+      if (forced && !calibrated) {
+        return '<div class="alert warn-box" style="margin:0 0 14px">' +
+          '<strong>首次使用，必须先完成风扇转速标定。</strong><br>' +
+          '请点下方「主动检测」：程序会把每路风扇先拉满、再降到 0% 各测一次，' +
+          '据此得出每路的转速范围，并判断这一路是否真的受 PWM 控制。' +
+          '没有标定就无法确认风扇到底听不听话，所以标定完成前不能进入软件。' +
+          '</div>';
+      }
+      return '';
+    })() +
     '<div class="hw-card">' +
       '<div class="hw-item">风扇控制器<b>' + esc((status && status.chip) || hardware.chip || '未知') + '</b></div>' +
       '<div class="hw-item">驱动家族<b>' + esc(ctrl ? ctrl.label : '未知') + '</b></div>' +
@@ -836,15 +958,50 @@ function renderSetup() {
       ? '<div class="alert">还检测到其它带 PWM 的控制器，但未被使用：' +
         others.map((o) => esc(o.name + '（' + o.hwmon + '）')).join('、') + '</div>'
       : '') +
-    '<table class="chan-table">' +
-      '<thead><tr><th style="width:34px"></th><th>通道</th>' +
-      '<th>最低转速 RPM</th><th>最高转速 RPM</th><th title="DC = 电压调速，PWM = 脉宽调速">模式</th>' +
-      '<th>调速</th><th>BIOS 绑定的温度源</th></tr></thead>' +
-      '<tbody>' + rows + '</tbody>' +
-    '</table>' +
-    '<p class="curve-hint" style="margin-top:10px">' +
-      '「主动检测」会把每路先拉满、再降到 0% 各测一次：这样既有转速范围，也能判断该路' +
-      '是否真的受 PWM 控制，还能看出风扇是否支持停转（0% 时读到 0 RPM 就是支持）。' +
+    // Sensors and headers side by side: the wizard is read once, and having
+    // both lists in view at the same time is what makes it a single page.
+    '<div class="setup-grid">' +
+    (function () {
+      // Everything the machine exposes, including the inputs no source offers:
+      // "found it and left it out, because ..." is worth being able to see.
+      const inv = hardware.temp_inventory || [];
+      const ok = inv.filter((s) => !s.reason);
+      const no = inv.filter((s) => s.reason);
+      const row = (s) =>
+        '<div class="sensor-row">' +
+          '<span class="s-name">' + esc(s.label) + '</span>' +
+          '<span class="s-chip">' + esc(s.chip) + '</span>' +
+          '<span class="s-temp">' +
+            (s.temperature === null || s.temperature === undefined
+              ? '–' : fmtTemp(s.temperature, 1) + '°') + '</span>' +
+          (s.reason ? '<span class="s-why">' + esc(s.reason) + '</span>' : '') +
+        '</div>';
+      return '<section class="setup-col">' +
+        '<div class="sub-head">温度传感器<span>' + inv.length + ' 路 · ' +
+          ok.length + ' 路有读数</span></div>' +
+        (inv.length
+          ? '<div class="sensor-list">' + ok.map(row).join('') + '</div>' +
+            (no.length
+              ? '<details class="fold"><summary>无读数的传感器（' + no.length + ' 路）' +
+                '</summary><div class="sensor-list">' + no.map(row).join('') + '</div></details>'
+              : '')
+          : '<p class="curve-hint">没有读到任何温度传感器。</p>') +
+        '</section>';
+    })() +
+    '<section class="setup-col">' +
+      '<div class="sub-head">风扇通道<span>' + channels.length + ' 路 · ' +
+        live.length + ' 路有转速</span></div>' +
+      (live.length ? tableOf(live) : '') +
+      (idle.length
+        ? '<details class="fold"' + (live.length ? '' : ' open') +
+          '><summary>无转速的通道（' + idle.length + ' 路）' +
+          '　—　可能没接风扇，也可能是风扇停转</summary>' + tableOf(idle) + '</details>'
+        : '') +
+    '</section>' +
+    '</div>' +
+    '<p class="curve-hint setup-hint">' +
+      '「主动检测」会把每路先拉满、再降到 0% 各测一次：既有转速范围，也能判断该路' +
+      '是否真的受 PWM 控制，还能看出风扇是否支持停转（0% 读到 0 RPM 就是支持）。' +
       '未检测时不改变任何设置。' +
     '</p>' +
     (function () {
@@ -870,7 +1027,9 @@ function renderSetup() {
     });
   });
 
-  $('#setup-apply').disabled = !controllable;
+  $('#setup-close').classList.toggle('hidden', forced);
+  $('#setup-apply').disabled = !controllable || (forced && !calibrated);
+
   const stored = channels.filter((c) => c.stored).length;
   const stamped = channels
     .map((c) => c.at)
@@ -878,8 +1037,20 @@ function renderSetup() {
   const when = stamped.length
     ? new Date(Math.max.apply(null, stamped) * 1000).toLocaleString()
     : null;
-  note.textContent = '已选 ' + setupState.selected.size + ' / ' + channels.length + ' 个通道' +
-    (stored ? '　·　' + stored + ' 路显示的是已保存的标定' + (when ? '（' + when + '）' : '') : '');
+  // Worth showing in every case: on a forced re-calibration the table is
+  // displaying the previous run's numbers, and that is exactly when the user
+  // needs to know they are looking at saved data.
+  const storedNote = stored
+    ? '　·　' + stored + ' 路显示的是已保存的标定' + (when ? '（' + when + '）' : '')
+    : '';
+  if (forced && !calibrated) {
+    note.textContent = ((status && (status.hardware_changes || []).length)
+      ? '硬件已变化：请重新点「主动检测」确认标定'
+      : '首次使用：请先点「主动检测」完成标定') + storedNote;
+  } else {
+    note.textContent = '已选 ' + setupState.selected.size + ' / ' + channels.length +
+      ' 个通道' + storedNote;
+  }
 }
 
 async function runProbe() {
@@ -937,8 +1108,13 @@ async function applySetup() {
 $('#btn-detect').addEventListener('click', openSetup);
 
 // Closing the wizard without applying means "keep what I have" -- record that
-// so it does not reappear on every page load.
+// so it does not reappear on every page load.  On a first run there is nothing
+// to keep, so the wizard simply refuses to close.
 async function dismissSetup() {
+  if (setupForced() && !setupProbed()) {
+    toast('请先完成转速标定', true);
+    return;
+  }
   closeSetup();
   if (!status || !status.needs_setup) return;
   try {
@@ -1033,12 +1209,5 @@ $('#donate-close').addEventListener('click', () => $('#donate').classList.add('h
 $('#donate').addEventListener('click', (event) => {
   if (event.target === $('#donate')) $('#donate').classList.add('hidden');
 });
-
-$('#btn-donate').addEventListener('click', () => $('#donate').classList.remove('hidden'));
-$('#donate-close').addEventListener('click', () => $('#donate').classList.add('hidden'));
-$('#donate').addEventListener('click', (event) => {
-  if (event.target === $('#donate')) $('#donate').classList.add('hidden');
-});
-
 
 boot();

@@ -44,7 +44,7 @@ import fanhardware  # noqa: E402
 APP_NAME = "fn-fancontrol"
 # Must be kept in step with the ``version`` field of the package manifest:
 # the app center does not export TRIM_APPVER to the daemon.
-VERSION = "1.10.2"
+VERSION = "1.10.5"
 
 MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -103,6 +103,7 @@ class Controller:
         self.original = {}      # channel -> (enable, duty) before we touched it
         self.mode_at = {}       # channel -> when manual mode was last asserted
         self.probe_results = {} # channel -> latest calibration result
+        self.hardware_changes = []  # what changed since the last calibration
         # keyed by source key: "cpu", "hdd", one "gpu:<id>" per GPU and one
         # "aux:<chip>:<tempN>" per extra sensor
         self.sources = {}
@@ -134,6 +135,22 @@ class Controller:
     def aux_keys(self):
         """Source keys for the extra sensors present on this machine."""
         return [fanconfig.AUX_PREFIX + sensor.id for sensor in self.aux]
+
+    def hardware_fingerprint(self):
+        """The two things that can invalidate a calibration.
+
+        The CPU (headers may be bound to it through PECI) and the set of fan
+        headers themselves.  Disks and GPUs are deliberately left out: they come
+        and go without the fans caring, and a calibration re-run over a USB
+        enclosure plugged in for an afternoon would be noise, not safety.
+        """
+        with self.lock:
+            channels = sorted(self.channels)
+        model = fanhardware.cpu_model()
+        return {
+            "cpu": [model] if model else [],
+            "channels": ["CH%d" % index for index in channels],
+        }
 
     def refresh_hardware(self):
         """Re-scan hwmon; safe to call at any time."""
@@ -226,18 +243,66 @@ class Controller:
         self._migrate_disk_selection(config)
 
         # Reload the calibrations that are already stored, so the detection
-        # table is populated the moment the UI opens instead of looking empty.
+        # table is populated the moment the UI opens instead of looking empty
+        # after every restart or upgrade.
         stored = {}
+        probe = config.get("probe") or {}
+        for item in probe.get("results") or []:
+            try:
+                entry = dict(item)
+                entry["stored"] = True
+                if probe.get("at"):
+                    entry["at"] = int(probe["at"])
+                stored[int(entry["channel"])] = entry
+            except (KeyError, TypeError, ValueError):
+                continue
+        # Older configs only kept a calibration for the channels being managed;
+        # fold those in so an upgrade does not blank the table either.
         for fan in config.get("fans", []):
+            if fan["channel"] in stored:
+                continue
             result = fanconfig.calibration_as_result(fan["channel"],
                                                      fan.get("calibration"))
             if result:
+                result["stored"] = True
                 stored[fan["channel"]] = result
 
         with self.lock:
             self.config = config
             self.probe_results = stored
+
+        self._check_hardware_change(config)
         return config
+
+    def _check_hardware_change(self, config):
+        """Re-open the wizard when the machine is no longer the calibrated one."""
+        current = self.hardware_fingerprint()
+        stored = config.get("fingerprint")
+        if not stored:
+            # Nothing on record yet: the config predates this feature, or the
+            # calibration was never finished.  Adopt the hardware as it is now
+            # -- treating "no record" as "everything changed" would force a
+            # pointless re-calibration on every upgrade.
+            config["fingerprint"] = current
+            try:
+                fanconfig.save(self.config_path, config)
+            except OSError as exc:
+                self.log("could not record the hardware fingerprint: %s" % exc)
+            self.hardware_changes = []
+            return []
+        changes = fanhardware.describe_hardware_changes(stored, current)
+        self.hardware_changes = changes
+        if not changes:
+            return changes
+        if config.get("setup_complete", True):
+            config["setup_complete"] = False
+            try:
+                fanconfig.save(self.config_path, config)
+            except OSError as exc:
+                self.log("could not save the re-calibration flag: %s" % exc)
+        self.log("hardware changed since the last calibration: %s"
+                 % "; ".join(changes))
+        return changes
 
     def apply_config(self, raw):
         """Validate, persist and immediately apply a new configuration."""
@@ -576,9 +641,35 @@ class Controller:
                 self.written.clear()
                 self.hold.clear()
                 self.probe_results = {item["channel"]: item for item in results}
+            # Persist the whole result set, not just the channels the user goes
+            # on to manage: the detection table reads every header back, and a
+            # calibration should not evaporate because a header was left unticked.
+            self._store_probe(results)
             return results
         finally:
             self.paused.clear()
+
+    def _store_probe(self, results):
+        """Write the latest probe results into the configuration."""
+        with self.lock:
+            config = dict(self.config or fanconfig.DEFAULT_CONFIG)
+        config["probe"] = {
+            "at": time.time(),
+            "results": [
+                {key: item.get(key) for key in (
+                    "channel", "rpm_high", "rpm_low", "duty_high", "duty_low",
+                    "rpm_min", "rpm_max", "responsive", "stops", "detected")}
+                for item in results
+            ],
+        }
+        config = fanconfig.normalise(config, list(self.channels.values()), self.gpu_keys)
+        try:
+            fanconfig.save(self.config_path, config)
+        except OSError as exc:
+            self.log("could not store the calibration results: %s" % exc)
+            return
+        with self.lock:
+            self.config = config
 
     def _calibration_for(self, index):
         """Turn a probe result into a storable calibration record."""
@@ -623,6 +714,11 @@ class Controller:
         raw = dict(self.config or fanconfig.DEFAULT_CONFIG)
         raw["fans"] = fans
         raw["setup_complete"] = True
+        # Record the machine this calibration belongs to, so swapping a CPU, a
+        # GPU or a disk re-opens the wizard rather than quietly keeping numbers
+        # measured against different hardware.
+        raw["fingerprint"] = self.hardware_fingerprint()
+        self.hardware_changes = []
         self.log("setup complete: channel(s) %s selected" % (selected,))
         return self.apply_config(raw)
 
@@ -710,6 +806,10 @@ class Controller:
                 "controllable": self.controllable,
                 "controller": self.profile.as_dict() if self.profile else None,
                 "needs_setup": not config.get("setup_complete", True),
+                #: What changed since the calibration, so the wizard can say why
+                #: it came back instead of just appearing again.
+                "hardware_changes": list(self.hardware_changes),
+                "probe_at": (config.get("probe") or {}).get("at"),
                 "probing": self.paused.is_set(),
                 "degraded": self.degraded,
                 "updated": self.updated,
@@ -727,7 +827,18 @@ class Controller:
 
     def hardware_info(self):
         with self.lock:
-            channels = [c.as_dict() for c in self.channels.values()]
+            results = {index: dict(item)
+                       for index, item in self.probe_results.items()}
+            channels = []
+            for channel in self.channels.values():
+                entry = channel.as_dict()
+                # Fold the last calibration back in, so the detection table
+                # still reads properly after a restart, an upgrade, or simply
+                # reloading the page.
+                for key, value in (results.get(channel.index) or {}).items():
+                    if key != "channel":
+                        entry[key] = value
+                channels.append(entry)
             disks = [d.as_dict() for d in self.disks]
             gpus = [g.as_dict() for g in self.gpus]
             aux = [s.as_dict() for s in self.aux]
@@ -739,6 +850,9 @@ class Controller:
             "disks": disks,
             "gpus": gpus,
             "aux": aux,
+            # Everything the machine exposes, including inputs no source offers,
+            # so the detection screen can account for all of them.
+            "temp_inventory": fanhardware.list_temp_inventory(),
             "profiles": [p.as_dict() for p in fanhardware.PROFILES],
             "unsupported": fanhardware.detect_other_controllers(),
         }

@@ -44,7 +44,12 @@
         <h2>温度源</h2>
         <p>选择参与调速的温度来源；一个风扇勾选多个来源时取其中的最高温度。</p>
       </div>
-      <div class="sources" id="sources"></div>
+      <div class="sources main" id="sources"></div>
+      <details class="fold" id="aux-fold">
+        <summary id="aux-summary">其它温度源</summary>
+        <div class="sources" id="aux-sources"></div>
+      </details>
+      <div class="sub-head hidden" id="disk-head">各硬盘温度<span id="disk-note"></span></div>
       <div class="disks" id="disks"></div>
     </section>
 
@@ -68,7 +73,7 @@
   <div class="toast hidden" id="toast"></div>
 
   <div class="modal hidden" id="setup">
-    <div class="modal-box">
+    <div class="modal-box modal-box-wide">
       <header class="modal-head">
         <h2 id="setup-title">硬件检测与初始化</h2>
         <button class="modal-close" id="setup-close" title="关闭">✕</button>
