@@ -1,6 +1,6 @@
 <div align="center">
 
-# niufan · 飞牛 NAS 风扇控制
+# NiuFan · 飞牛 NAS 风扇控制
 
 **按 CPU / 显卡 / 硬盘温度自动调节机箱与 CPU 风扇转速**
 
