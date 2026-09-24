@@ -1,13 +1,13 @@
 {
     ".url": {
-        "fn-fancontrol.Application": {
+        "niufan.Application": {
             "title": "风扇控制",
             "icon": "images/icon_{0}.png",
             "type": "iframe",
             "protocol": "",
-            "gatewayPrefix": "/app/fn-fancontrol",
+            "gatewayPrefix": "/app/niufan",
             "gatewaySocket": "app.sock",
-            "url": "/app/fn-fancontrol",
+            "url": "/app/niufan",
             "allUsers": false,
             "control": {
                 "accessPerm": "editable"

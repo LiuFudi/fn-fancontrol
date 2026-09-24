@@ -3,6 +3,22 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [2.0.0] - 2026-09-22
+
+### 变更
+
+- **项目改名为 `niufan`，中文名仍为「风扇控制」。**
+  包标识 `appname` 由 `fn-fancontrol` 改为 `niufan`，仓库地址变为
+  <https://github.com/LiuFudi/niufan>，桌面入口、网关路径（`/app/niufan`）
+  以及全部运行时路径随之变化。`display_name` 保持「风扇控制」不变。
+
+  **这是主版本号提升的原因**：`appname` 变了，平台会把它当成**另一个应用** ——
+  不能覆盖升级，配置目录也从 `@appconf/fn-fancontrol` 变成 `@appconf/niufan`。
+
+- **首次启动会自动迁移旧配置。** 如果新配置不存在、而旧的
+  `@appconf/fn-fancontrol/config.json` 还在，会把它读过来并在日志里记一行，
+  所以曲线、标定结果、温度源选择都不会丢。迁移只做一次，之后以新配置为准。
+
 ## [1.10.6] - 2026-09-22
 
 ### 变更
@@ -207,7 +223,7 @@
   而内核会自由复用 PID。旧版 `cmd/main` 只用 `kill -0` 判断进程存活，于是重启后当旧
   PID 被别的服务（实测是 `trim-sharelink`）占用时，`status` 会误报「应用仍在运行」：
   - 应用中心调用 `cmd/main status` 得到 0，认为无需启动 —— 但它仍会发出
-    `APP_AUTO_STARTED` 事件并让网关注册 `/app/fn-fancontrol` 路由；
+    `APP_AUTO_STARTED` 事件并让网关注册 `/app/niufan` 路由；
   - 结果路由存在、进程不存在、socket 从未创建，用户打开应用只有 502，
     且因为 `status` 不写日志，排查时看不到任何线索。
 

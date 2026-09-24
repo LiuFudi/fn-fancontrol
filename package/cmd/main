@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 LiuFudi
 #
-# This file is part of fn-fancontrol, licensed under the GNU General Public
+# This file is part of niufan, licensed under the GNU General Public
 # License version 3 or (at your option) any later version.
 # See the LICENSE file for the full text.
-# fn-fancontrol lifecycle script: start / stop / status.
+# niufan lifecycle script: start / stop / status.
 #
 # Environment provided by the fnOS app center:
 #   TRIM_APPDEST  installed application files (target)
@@ -13,7 +13,7 @@
 #   TRIM_PKGVAR   persistent runtime data
 set -u
 
-APPNAME="fn-fancontrol"
+APPNAME="niufan"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APPDEST="${TRIM_APPDEST:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 PKGVAR="${TRIM_PKGVAR:-${APPDEST}/var}"

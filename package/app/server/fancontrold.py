@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 LiuFudi
 #
-# This file is part of fn-fancontrol, licensed under the GNU General Public
+# This file is part of niufan, licensed under the GNU General Public
 # License version 3 or (at your option) any later version.
 # See the LICENSE file for the full text.
-"""fn-fancontrol daemon.
+"""niufan daemon.
 
 Reads a temperature source (CPU, GPU or disks), runs it through a per-fan
 curve and drives the SuperIO PWM output accordingly.  A small HTTP server --
@@ -41,10 +41,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fanconfig  # noqa: E402
 import fanhardware  # noqa: E402
 
-APP_NAME = "fn-fancontrol"
+APP_NAME = "niufan"
+#: What the app was called before 2.0.0.  Only used to pick up an existing
+#: configuration on the first start after the rename.
+LEGACY_APP_NAME = "fn-fancontrol"
 # Must be kept in step with the ``version`` field of the package manifest:
 # the app center does not export TRIM_APPVER to the daemon.
-VERSION = "1.10.6"
+VERSION = "2.0.0"
 
 MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -215,8 +218,38 @@ class Controller:
                     self.log("  %s -> %s" % (old, new))
         return config
 
+    def _migrate_legacy_config(self):
+        """Pull the pre-rename configuration across, once.
+
+        The app used to be called ``fn-fancontrol``.  Its config sits in a
+        sibling directory under the same ``@appconf`` volume, so a user who had
+        already tuned curves and run a calibration would otherwise meet the
+        renamed app with an empty wizard.  Copy it over only when there is
+        nothing here yet, and never look at it again.
+        """
+        if os.path.exists(self.config_path):
+            return False
+        config_dir = os.path.dirname(os.path.abspath(self.config_path))
+        legacy = os.path.join(os.path.dirname(config_dir), LEGACY_APP_NAME,
+                              os.path.basename(self.config_path))
+        if not os.path.isfile(legacy):
+            return False
+        try:
+            with open(legacy, "rb") as source:
+                payload = source.read()
+            os.makedirs(config_dir, exist_ok=True)
+            with open(self.config_path, "wb") as target:
+                target.write(payload)
+        except OSError as exc:
+            self.log("could not migrate the old configuration: %s" % exc)
+            return False
+        self.log("migrated the configuration from %s (the app used to be called "
+                 "%s)" % (legacy, LEGACY_APP_NAME))
+        return True
+
     def load_config(self, create_if_missing=True):
         channels = list(self.channels.values())
+        self._migrate_legacy_config()
 
         # A config written before the detection wizard existed has no
         # setup_complete key.  Show the wizard once so those users get to pick
@@ -1241,7 +1274,7 @@ def _add_command(sub, name, help_text, extra=()):
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        prog="fancontrold", description="fn-fancontrol daemon")
+        prog="fancontrold", description="niufan daemon")
     sub = parser.add_subparsers(dest="command")
 
     _add_command(

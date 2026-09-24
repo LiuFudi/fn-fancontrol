@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 LiuFudi
 #
-# This file is part of fn-fancontrol, licensed under the GNU General Public
+# This file is part of niufan, licensed under the GNU General Public
 # License version 3 or (at your option) any later version.
 # See the LICENSE file for the full text.
-# Build the fn-fancontrol .fpk and stamp the version into the artifact name.
+# Build the niufan .fpk and stamp the version into the artifact name.
 #
 # `fnpack build` always emits "<appname>.fpk" inside the source tree and offers
 # no way to override the name, which makes two builds impossible to tell apart.

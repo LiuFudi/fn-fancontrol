@@ -1,6 +1,6 @@
 <div align="center">
 
-# fancontrol-for-fn · 飞牛 NAS 风扇控制
+# niufan · 飞牛 NAS 风扇控制
 
 **按 CPU / 显卡 / 硬盘温度自动调节机箱与 CPU 风扇转速**
 
@@ -75,15 +75,15 @@
 
 ### 从 Release 安装
 
-1. 到 [Releases](../../releases) 下载 `fn-fancontrol-<版本>.fpk`（或直接用仓库 `dist/` 里的文件）
+1. 到 [Releases](../../releases) 下载 `niufan-<版本>.fpk`（或直接用仓库 `dist/` 里的文件）
 2. 飞牛 **应用中心 → 手动安装**，选择该 `.fpk`，选一个存储空间
 3. 安装完成后打开 **风扇控制**
 
 也可以走命令行：
 
 ```bash
-sudo appcenter-cli install-fpk fn-fancontrol-1.2.0.fpk -v 3   # -v 是存储空间序号
-sudo appcenter-cli start fn-fancontrol
+sudo appcenter-cli install-fpk niufan-1.2.0.fpk -v 3   # -v 是存储空间序号
+sudo appcenter-cli start niufan
 ```
 
 > ⚠️ 实测 `appcenter-cli install-fpk` 对**已安装的同名应用不会执行升级**，
@@ -177,9 +177,9 @@ sudo modprobe it87 ignore_resource_conflict=1   # 只影响该驱动，风险相
 需要飞牛官方的打包工具 `fnpack`（随 fnOS 提供，位于 `/usr/local/bin/fnpack`）。
 
 ```bash
-git clone https://github.com/LiuFudi/fn-fancontrol.git
-cd fn-fancontrol
-./build-fpk.sh                     # 产出 dist/fn-fancontrol-<版本>.fpk
+git clone https://github.com/LiuFudi/niufan.git
+cd niufan
+./build-fpk.sh                     # 产出 dist/niufan-<版本>.fpk
 ```
 
 `build-fpk.sh` 会：
@@ -200,7 +200,7 @@ python3 tools/make_icons.py
 
 ```
 浏览器 iframe
-   └─ 飞牛统一网关 /app/fn-fancontrol   ← 校验登录态 + 转发 X-Trim-Isadmin
+   └─ 飞牛统一网关 /app/niufan   ← 校验登录态 + 转发 X-Trim-Isadmin
         └─ Unix socket  package/target/app.sock   ← 不监听任何 TCP 端口
              └─ fancontrold.py (以 root 运行)
                   ├─ 控制循环线程：读温度 → 曲线插值 → 写 /sys/class/hwmon/*/pwmN
@@ -217,7 +217,7 @@ python3 tools/make_icons.py
 
 ## 配置
 
-配置以 JSON 保存在应用配置目录（`/volN/@appconf/fn-fancontrol/config.json`），
+配置以 JSON 保存在应用配置目录（`/volN/@appconf/niufan/config.json`），
 界面保存时原子写入。手工编辑也会在下次保存时被服务端规范化。
 
 ```jsonc
@@ -309,9 +309,9 @@ I/O 端口，需要在启动参数里加 `acpi_enforce_resources=lax` 后重启�
 网关连不上应用，通常是应用没起来或 socket 没建立：
 
 ```bash
-sudo appcenter-cli status fn-fancontrol
-ls -la /var/apps/fn-fancontrol/target/app.sock    # 关键
-sudo /var/apps/fn-fancontrol/cmd/main status; echo "exit=$?"
+sudo appcenter-cli status niufan
+ls -la /var/apps/niufan/target/app.sock    # 关键
+sudo /var/apps/niufan/cmd/main status; echo "exit=$?"
 ```
 
 若状态显示 running 但 socket 不存在，是 1.7.1 修掉的缺陷：PID 文件跨重启保留，
@@ -319,9 +319,9 @@ sudo /var/apps/fn-fancontrol/cmd/main status; echo "exit=$?"
 应用中心便跳过启动。恢复：
 
 ```bash
-sudo appcenter-cli stop fn-fancontrol
-sudo rm -f /var/apps/fn-fancontrol/var/app.pid
-sudo appcenter-cli start fn-fancontrol
+sudo appcenter-cli stop niufan
+sudo rm -f /var/apps/niufan/var/app.pid
+sudo appcenter-cli start niufan
 ```
 </details>
 
@@ -380,7 +380,7 @@ echo 76  > $H/pwm1; sleep 5; cat $H/fan1_input
 ## 目录结构
 
 ```
-fn-fancontrol/
+niufan/
 ├── LICENSE                   GPL-3.0
 ├── README.md / README.en.md
 ├── CHANGELOG.md
@@ -427,10 +427,10 @@ fn-fancontrol/
 
 [GNU General Public License v3.0 或更新版本](LICENSE) © 2026 [LiuFudi](https://github.com/LiuFudi)
 
-fn-fancontrol 是自由软件：你可以依照自由软件基金会发布的 GNU 通用公共许可证
+niufan 是自由软件：你可以依照自由软件基金会发布的 GNU 通用公共许可证
 （第 3 版，或你选择的任何更新版本）的条款重新发布和/或修改它。
 
-fn-fancontrol 分发时希望它有用，但不提供**任何担保**，甚至不带对适销性或特定用途
+niufan 分发时希望它有用，但不提供**任何担保**，甚至不带对适销性或特定用途
 适用性的默示担保。详见 GNU 通用公共许可证。
 
 你应当已随本程序收到 GNU 通用公共许可证的副本；如果没有，

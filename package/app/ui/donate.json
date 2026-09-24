@@ -5,7 +5,7 @@
     "qrcodes 里的 key 对应构建时编译进 donate-qr.js 的收款码，界面上没有可直接替换的图片文件。"
   ],
   "title": "支持作者",
-  "message": "fn-fancontrol 是免费开源软件。如果它帮到了你，可以请作者喝杯咖啡。",
+  "message": "niufan 是免费开源软件。如果它帮到了你，可以请作者喝杯咖啡。",
   "qrcodes": [
     {
       "label": "微信",

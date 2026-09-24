@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 LiuFudi
 #
-# This file is part of fn-fancontrol, licensed under the GNU General Public
+# This file is part of niufan, licensed under the GNU General Public
 # License version 3 or (at your option) any later version.
 # See the LICENSE file for the full text.
-"""Generate the fn-fancontrol icon set.
+"""Generate the niufan icon set.
 
 No imaging library is available on this box, so the PNGs are written directly
 (RGBA8, zlib) and anti-aliased by supersampling a small analytic scene: a

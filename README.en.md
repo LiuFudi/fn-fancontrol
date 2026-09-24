@@ -1,6 +1,6 @@
 <div align="center">
 
-# fn-fancontrol · Fan control for fnOS (FeiNiu NAS)
+# niufan · Fan control for fnOS (FeiNiu NAS)
 
 **Drive your chassis and CPU fans from CPU, GPU and disk temperatures**
 
@@ -75,15 +75,15 @@ interval, hysteresis, fail-safe duty).
 
 ### From a Release
 
-1. Download `fn-fancontrol-<version>.fpk` from [Releases](../../releases) (or use the copy in `dist/`)
+1. Download `niufan-<version>.fpk` from [Releases](../../releases) (or use the copy in `dist/`)
 2. fnOS **App Center → manual install**, pick the `.fpk`, choose a volume
 3. Open **Fan Control**
 
 Or from the shell:
 
 ```bash
-sudo appcenter-cli install-fpk fn-fancontrol-1.2.0.fpk -v 3   # -v is the volume index
-sudo appcenter-cli start fn-fancontrol
+sudo appcenter-cli install-fpk niufan-1.2.0.fpk -v 3   # -v is the volume index
+sudo appcenter-cli start niufan
 ```
 
 > ⚠️ `appcenter-cli install-fpk` does **not** upgrade an already-installed app of the same
@@ -188,9 +188,9 @@ MSI B550/X670 are detected and reported honestly as monitor-only.
 Requires the official `fnpack` tool, which ships with fnOS at `/usr/local/bin/fnpack`.
 
 ```bash
-git clone https://github.com/LiuFudi/fn-fancontrol.git
-cd fn-fancontrol
-./build-fpk.sh                     # produces dist/fn-fancontrol-<version>.fpk
+git clone https://github.com/LiuFudi/niufan.git
+cd niufan
+./build-fpk.sh                     # produces dist/niufan-<version>.fpk
 ```
 
 `build-fpk.sh` reads `appname`/`version` from `package/manifest`, cross-checks the `VERSION`
@@ -208,7 +208,7 @@ python3 tools/make_icons.py
 
 ```
 browser iframe
-   └─ fnOS gateway /app/fn-fancontrol     ← validates the session, forwards X-Trim-Isadmin
+   └─ fnOS gateway /app/niufan     ← validates the session, forwards X-Trim-Isadmin
         └─ Unix socket  package/target/app.sock   ← no TCP port is ever opened
              └─ fancontrold.py (runs as root)
                   ├─ control loop: read temps → interpolate curve → write /sys/class/hwmon/*/pwmN
@@ -226,7 +226,7 @@ install once and the daemon stays root; day-to-day tuning is web-only, no sudo, 
 
 ## Configuration
 
-Stored as JSON in the app config directory (`/volN/@appconf/fn-fancontrol/config.json`) and
+Stored as JSON in the app config directory (`/volN/@appconf/niufan/config.json`) and
 written atomically. Hand edits are normalised on the next save.
 
 ```jsonc
@@ -319,9 +319,9 @@ If the UI names a chip such as `it87`, that model simply is not supported yet �
 The gateway cannot reach the app — it is either not running or its socket is missing:
 
 ```bash
-sudo appcenter-cli status fn-fancontrol
-ls -la /var/apps/fn-fancontrol/target/app.sock    # the decisive check
-sudo /var/apps/fn-fancontrol/cmd/main status; echo "exit=$?"
+sudo appcenter-cli status niufan
+ls -la /var/apps/niufan/target/app.sock    # the decisive check
+sudo /var/apps/niufan/cmd/main status; echo "exit=$?"
 ```
 
 If the status says running but the socket is gone, that is the defect fixed in 1.7.1: the PID
@@ -330,9 +330,9 @@ inherit the old PID and a bare `kill -0` makes the app look alive, which stops t
 from starting it. Recover with:
 
 ```bash
-sudo appcenter-cli stop fn-fancontrol
-sudo rm -f /var/apps/fn-fancontrol/var/app.pid
-sudo appcenter-cli start fn-fancontrol
+sudo appcenter-cli stop niufan
+sudo rm -f /var/apps/niufan/var/app.pid
+sudo appcenter-cli start niufan
 ```
 </details>
 
@@ -394,7 +394,7 @@ to `smartctl -n standby`, which by design does not wake a sleeping drive.
 ## Repository layout
 
 ```
-fn-fancontrol/
+niufan/
 ├── LICENSE                   GPL-3.0
 ├── README.md / README.en.md
 ├── CHANGELOG.md
@@ -441,11 +441,11 @@ The UI has a small ❤ entry in the top bar. It is **purely local**:
 
 [GNU General Public License v3.0 or later](LICENSE) © 2026 [LiuFudi](https://github.com/LiuFudi)
 
-fn-fancontrol is free software: you can redistribute it and/or modify it under the terms of
+niufan is free software: you can redistribute it and/or modify it under the terms of
 the GNU General Public License as published by the Free Software Foundation, either version 3
 of the License, or (at your option) any later version.
 
-fn-fancontrol is distributed in the hope that it will be useful, but **WITHOUT ANY WARRANTY**;
+niufan is distributed in the hope that it will be useful, but **WITHOUT ANY WARRANTY**;
 without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 See the GNU General Public License for more details.
 
