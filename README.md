@@ -1,6 +1,6 @@
 <div align="center">
 
-# fn-fancontrol · 飞牛 NAS 风扇控制
+# fancontrol-for-fn · 飞牛 NAS 风扇控制
 
 **按 CPU / 显卡 / 硬盘温度自动调节机箱与 CPU 风扇转速**
 
