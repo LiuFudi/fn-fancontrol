@@ -8,7 +8,7 @@ name: Release
 # Release procedure:
 #   1. bump `version` in package/manifest (and VERSION in fancontrold.py)
 #   2. ./build-fpk.sh
-#   3. commit dist/fn-fancontrol-<version>.fpk
+#   3. commit dist/niufan-<version>.fpk
 #   4. git tag v<version> && git push --tags
 
 on:
@@ -39,7 +39,7 @@ jobs:
       - name: Verify the committed artifact matches
         run: |
           set -euo pipefail
-          fpk="dist/fn-fancontrol-${{ steps.manifest.outputs.version }}.fpk"
+          fpk="dist/niufan-${{ steps.manifest.outputs.version }}.fpk"
           if [ ! -f "$fpk" ]; then
             echo "::error::$fpk is missing. Run ./build-fpk.sh and commit it."
             exit 1
@@ -56,6 +56,6 @@ jobs:
       - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/fn-fancontrol-*.fpk
+          files: dist/niufan-*.fpk
           generate_release_notes: true
           fail_on_unmatched_files: true

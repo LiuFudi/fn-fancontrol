@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-x86-lightgrey.svg)](#兼容性)
 [![fnOS](https://img.shields.io/badge/fnOS-%E2%89%A51.1.3100-green.svg)](https://www.fnnas.com/)
-[![Version](https://img.shields.io/badge/version-1.9.0-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.0.1-orange.svg)](CHANGELOG.md)
 
 [简体中文](README.md) · [English](README.en.md)
 
@@ -177,23 +177,44 @@ sudo modprobe it87 ignore_resource_conflict=1   # 只影响该驱动，风险相
 需要飞牛官方的打包工具 `fnpack`（随 fnOS 提供，位于 `/usr/local/bin/fnpack`）。
 
 ```bash
-git clone https://github.com/LiuFudi/niufan.git
-cd niufan
+git clone https://github.com/LiuFudi/NiuFan.git
+cd NiuFan
 ./build-fpk.sh                     # 产出 dist/niufan-<版本>.fpk
 ```
 
-`build-fpk.sh` 会：
+Windows 上装了官方 `fnpack-1.2.3-windows-amd64` 就能直接出包（脚本会修掉它写成 0666
+的权限位，否则 `cmd/*` 装上去不可执行）：
 
-1. 从 `package/manifest` 读取 `appname` 与 `version`
-2. 校验 `app/server/fancontrold.py` 里的 `VERSION` 常量与 manifest 一致（不一致会告警）
-3. 调用 `fnpack build`，把产物重命名为 **`<appname>-<version>.fpk`** 放进 `dist/`
-4. 反向校验成品内 manifest 的版本与文件名一致
-5. 清理历史遗留的无版本号产物，但保留其它版本的产物
+```powershell
+powershell -ExecutionPolicy Bypass -File build-fpk.ps1
+```
+
+两个入口跑的是同一套检查（`tools/release_checks.py`），任何一条不通过都直接以非零码退出：
+
+1. **版本号交叉校验**：`package/manifest` 的 `version`、`app/server/fancontrold.py` 的
+   `VERSION`、`CHANGELOG.md` 顶层条目、README 顶部徽章必须一致
+2. 从 `package/manifest` 读取 `appname` 与 `version`
+3. 清理 `__pycache__` / `*.pyc` / 遗留 `.fpk`，重建内嵌收款码
+4. **打包树检查**：必需文件齐全；`appname` / `desktop_applaunchname` / `display_name` /
+   网关路径等标识未被改动；无软链接、无脚手架占位符、无主机专属路径或口令；
+   manifest 的值里不能出现 `;`（fnpack 会把它当行内注释，desc 会被截断）
+5. 调用 `fnpack build`，并检查产物文件真的存在（`fnpack` 失败也返回 0）
+6. 归一包内权限（`cmd/*` 755、其余 644）并重算 manifest 的 `checksum`
+7. **成品检查**：版本、`checksum == md5(app.tgz)`、权限、软链接，以及包内 UI 文案
+   （`<h1>NiuFan</h1>`、Github 链接与 QQ 群号）都对，才重命名为
+   **`<appname>-<version>.fpk`** 放进 `dist/`
+8. 清理历史遗留的无版本号产物，但保留其它版本的产物
 
 图标可以重新生成（纯 Python，无第三方依赖）：
 
 ```bash
 python3 tools/make_icons.py
+```
+
+改动前后的数据兼容性可以单独验：
+
+```bash
+python3 tools/check_compat.py      # 旧配置读取、改名迁移、卸载保留数据、旧 donate.json
 ```
 
 ## 工作原理
@@ -380,11 +401,12 @@ echo 76  > $H/pwm1; sleep 5; cat $H/fan1_input
 ## 目录结构
 
 ```
-niufan/
+NiuFan/
 ├── LICENSE                   GPL-3.0
 ├── README.md / README.en.md
 ├── CHANGELOG.md
-├── build-fpk.sh              构建 + 版本化命名
+├── build-fpk.sh              构建（fnOS / Linux）+ 版本化命名
+├── build-fpk.ps1             构建（Windows，fnpack.exe）
 ├── package/                  fnpack 源码树（会被打包进 fpk）
 │   ├── manifest
 │   ├── ICON.PNG / ICON_256.PNG
@@ -397,6 +419,8 @@ niufan/
 │   ├── cmd/                  生命周期脚本
 │   └── config/               privilege / resource
 ├── tools/make_icons.py       纯 Python 图标生成
+├── tools/release_checks.py   版本校验 / 打包树检查 / 权限归一 / 成品检查
+├── tools/check_compat.py     新旧配置与升级回退的兼容性检查
 └── dist/                     构建产物
 ```
 
@@ -421,16 +445,16 @@ niufan/
 应用界面右上角有一个 ❤ 打赏入口。它是**纯本地**的：
 
 - 不联网、不上报、不统计点击；
-- 打赏完全自愿，**不影响任何功能**，也不会改变软件的任何行为。
+- 打赏完全自愿，**不影响任何功能**，也不会改变软件的任何行为。<br />如果遇到BUG，欢迎前往<a href="https://github.com/LiuFudi/NiuFan" style="color:red;">Github</a>反馈或者添加<span style="color:red;">QQ群：818299505</span>
 
 ## 许可证
 
 [GNU General Public License v3.0 或更新版本](LICENSE) © 2026 [LiuFudi](https://github.com/LiuFudi)
 
-niufan 是自由软件：你可以依照自由软件基金会发布的 GNU 通用公共许可证
+NiuFan 是自由软件：你可以依照自由软件基金会发布的 GNU 通用公共许可证
 （第 3 版，或你选择的任何更新版本）的条款重新发布和/或修改它。
 
-niufan 分发时希望它有用，但不提供**任何担保**，甚至不带对适销性或特定用途
+NiuFan 分发时希望它有用，但不提供**任何担保**，甚至不带对适销性或特定用途
 适用性的默示担保。详见 GNU 通用公共许可证。
 
 你应当已随本程序收到 GNU 通用公共许可证的副本；如果没有，

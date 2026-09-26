@@ -464,6 +464,13 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 0; }
 
 .donate-msg { margin: 0 0 16px; font-size: 13.5px; line-height: 1.7; }
 
+/* The BUG-report line sits right under the opt-in note.  Only the link and the
+   QQ group are red, so the feedback channels stand out without colouring the
+   whole paragraph. */
+.curve-hint.donate-foot { margin-top: 6px; }
+.donate-accent { color: var(--err); }
+a.donate-accent { text-decoration: underline; text-underline-offset: 2px; }
+
 .qr-grid {
   display: flex;
   flex-wrap: wrap;

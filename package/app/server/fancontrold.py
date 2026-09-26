@@ -42,12 +42,16 @@ import fanconfig  # noqa: E402
 import fanhardware  # noqa: E402
 
 APP_NAME = "niufan"
+#: Name shown to the operator in log lines and --help.  Purely cosmetic: the
+#: identifier above stays ``niufan`` because it names the config directory, the
+#: gateway path and the value reported by /api/ping.
+APP_TITLE = "NiuFan"
 #: What the app was called before 2.0.0.  Only used to pick up an existing
 #: configuration on the first start after the rename.
 LEGACY_APP_NAME = "fn-fancontrol"
 # Must be kept in step with the ``version`` field of the package manifest:
 # the app center does not export TRIM_APPVER to the daemon.
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 
 MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -1243,7 +1247,7 @@ def cmd_run(args, log, paths):
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, handle_signal)
 
-    log("%s %s listening on %s (ui=%s)" % (APP_NAME, VERSION, endpoint, ui_dir))
+    log("%s %s listening on %s (ui=%s)" % (APP_TITLE, VERSION, endpoint, ui_dir))
     http_thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.5},
                                    name="http", daemon=True)
     http_thread.start()
@@ -1274,7 +1278,7 @@ def _add_command(sub, name, help_text, extra=()):
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        prog="fancontrold", description="niufan daemon")
+        prog="fancontrold", description="%s daemon" % APP_TITLE)
     sub = parser.add_subparsers(dest="command")
 
     _add_command(

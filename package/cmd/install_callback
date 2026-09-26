@@ -22,7 +22,7 @@ DAEMON="${APPDEST}/server/fancontrold.py"
 mkdir -p "$PKGETC" "$PKGVAR" 2>/dev/null
 
 fail() {
-    echo "niufan: $1" >> "$LOG" 2>/dev/null
+    echo "NiuFan: $1" >> "$LOG" 2>/dev/null
     exit 1
 }
 

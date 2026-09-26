@@ -14,6 +14,9 @@
 set -u
 
 APPNAME="niufan"
+# Name written to the logs.  The identifier above names the gateway path and the
+# config directory, so it stays as is; only what the operator reads changes.
+APP_TITLE="NiuFan"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APPDEST="${TRIM_APPDEST:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 PKGVAR="${TRIM_PKGVAR:-${APPDEST}/var}"
@@ -90,20 +93,20 @@ start_process() {
 
     if [ ! -r "$DAEMON" ]; then
         log_msg "ERROR: daemon not found at $DAEMON"
-        echo "$APPNAME: daemon not found at $DAEMON" >> "${TRIM_TEMP_LOGFILE:-/dev/null}"
+        echo "$APP_TITLE: daemon not found at $DAEMON" >> "${TRIM_TEMP_LOGFILE:-/dev/null}"
         return 1
     fi
 
     if [ ! -x "$PYTHON" ]; then
         log_msg "ERROR: python3 not found"
-        echo "$APPNAME: python3 is required but was not found" >> "${TRIM_TEMP_LOGFILE:-/dev/null}"
+        echo "$APP_TITLE: python3 is required but was not found" >> "${TRIM_TEMP_LOGFILE:-/dev/null}"
         return 1
     fi
 
     # A socket left behind by a crash would block the bind.
     rm -f "$SOCKET" 2>/dev/null
 
-    log_msg "starting $APPNAME"
+    log_msg "starting $APP_TITLE"
     # The daemon must run as root: it writes /sys/class/hwmon/*/pwm* and may
     # load the SuperIO kernel module.  Only the fnOS gateway (which runs as
     # root) can reach the resulting socket, and --require-admin additionally

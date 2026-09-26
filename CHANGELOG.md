@@ -3,6 +3,26 @@
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [2.0.1] - 2026-09-26
+
+### 变更
+
+- **展示名与文案统一。** 对外（应用中心 `display_name`、桌面图标、应用列表、启动器）显示
+  「风扇控制」；进入应用后的主界面显示 `NiuFan` —— 前端 `<title>`、顶栏标题、打赏弹窗
+  文案，以及启动日志与 `--help` 里的名字都统一成 `NiuFan`。README 顶部标题为
+  `NiuFan · 飞牛 NAS 风扇控制`。
+
+- **打赏弹窗新增 BUG 反馈入口。** 原来那句「打赏完全自愿，不影响任何功能，也不会改变
+  软件的任何行为。」一字未改，后面另起一行给出
+  「如果遇到BUG，欢迎前往 Github 反馈或者添加 QQ群：818299505」：`Github` 指向
+  <https://github.com/LiuFudi/NiuFan>，与 `QQ群：818299505` 一起用项目的 `--err` 红标出。
+  应用介绍（`manifest` 的 `desc`，HTML）与 README 的「打赏支持」一节同步补上这一行。
+
+- **标识一个都没动。** `appname`、桌面入口键名 `niufan.Application`、网关路径
+  `/app/niufan`、配置目录 `@appconf/niufan`、`APP_NAME`、API 路径与配置 key 全部保持原样，
+  所以升级后曲线、标定结果、温度源选择照旧读得到 —— 这也是本次只抬 PATCH 号的原因：
+  fnOS 不允许同名同版本覆盖安装，改了内容就必须换版本号。
+
 ## [2.0.0] - 2026-09-22
 
 ### 变更

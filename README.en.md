@@ -1,13 +1,13 @@
 <div align="center">
 
-# niufan · Fan control for fnOS (FeiNiu NAS)
+# NiuFan · Fan control for fnOS (FeiNiu NAS)
 
 **Drive your chassis and CPU fans from CPU, GPU and disk temperatures**
 
 [![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-x86-lightgrey.svg)](#compatibility)
 [![fnOS](https://img.shields.io/badge/fnOS-%E2%89%A51.1.3100-green.svg)](https://www.fnnas.com/)
-[![Version](https://img.shields.io/badge/version-1.9.0-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.0.1-orange.svg)](CHANGELOG.md)
 
 [简体中文](README.md) · [English](README.en.md)
 
@@ -188,15 +188,27 @@ MSI B550/X670 are detected and reported honestly as monitor-only.
 Requires the official `fnpack` tool, which ships with fnOS at `/usr/local/bin/fnpack`.
 
 ```bash
-git clone https://github.com/LiuFudi/niufan.git
-cd niufan
+git clone https://github.com/LiuFudi/NiuFan.git
+cd NiuFan
 ./build-fpk.sh                     # produces dist/niufan-<version>.fpk
 ```
 
-`build-fpk.sh` reads `appname`/`version` from `package/manifest`, cross-checks the `VERSION`
-constant inside the daemon, runs `fnpack build`, renames the artifact to
-`<appname>-<version>.fpk` in `dist/`, and verifies the version inside the finished package
-matches its filename.
+On Windows the official `fnpack-1.2.3-windows-amd64` works too (the script fixes the mode
+bits it writes as 0666, which would otherwise leave `cmd/*` non-executable after install):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build-fpk.ps1
+```
+
+Both entry points run the same checks (`tools/release_checks.py`) and exit non-zero on the
+first problem: the version is cross-checked in four places (manifest, the daemon's `VERSION`
+constant, the top CHANGELOG entry, the README badge); `__pycache__` / `*.pyc` / stale `.fpk`
+files are cleared and the inlined QR codes rebuilt; the packaging tree is checked for the
+identifiers that must never move, symlinks, scaffold placeholders and host-specific paths; the
+artifact is checked for existence (`fnpack` exits 0 even when it wrote nothing), then its modes
+are normalised, the manifest `checksum` re-stamped, and the finished package inspected
+(version, checksum, modes, and the UI strings inside it). It lands in `dist/` as
+`<appname>-<version>.fpk`.
 
 Icons can be regenerated with pure Python (no imaging library needed):
 
@@ -394,11 +406,12 @@ to `smartctl -n standby`, which by design does not wake a sleeping drive.
 ## Repository layout
 
 ```
-niufan/
+NiuFan/
 ├── LICENSE                   GPL-3.0
 ├── README.md / README.en.md
 ├── CHANGELOG.md
-├── build-fpk.sh              build + version-stamped artifact name
+├── build-fpk.sh              build on fnOS / Linux + version-stamped artifact name
+├── build-fpk.ps1             build on Windows (fnpack.exe)
 ├── package/                  fnpack source tree (packaged into the fpk)
 │   ├── manifest
 │   ├── ICON.PNG / ICON_256.PNG
@@ -411,6 +424,8 @@ niufan/
 │   ├── cmd/                  lifecycle scripts
 │   └── config/               privilege / resource
 ├── tools/make_icons.py       pure-Python icon generator
+├── tools/release_checks.py   version, packaging-tree, mode and artifact checks
+├── tools/check_compat.py     upgrade / rollback / old-config compatibility checks
 └── dist/                     build output
 ```
 
@@ -435,17 +450,17 @@ yourself, especially on a board that has not been verified.
 The UI has a small ❤ entry in the top bar. It is **purely local**:
 
 - no network access, no reporting, no click tracking;
-- donating is entirely optional and **never changes any behaviour** of the software.
+- donating is entirely optional and **never changes any behaviour** of the software.<br />Found a bug? Please report it on <a href="https://github.com/LiuFudi/NiuFan" style="color:red;">Github</a> or join <span style="color:red;">QQ group: 818299505</span>
 
 ## License
 
 [GNU General Public License v3.0 or later](LICENSE) © 2026 [LiuFudi](https://github.com/LiuFudi)
 
-niufan is free software: you can redistribute it and/or modify it under the terms of
+NiuFan is free software: you can redistribute it and/or modify it under the terms of
 the GNU General Public License as published by the Free Software Foundation, either version 3
 of the License, or (at your option) any later version.
 
-niufan is distributed in the hope that it will be useful, but **WITHOUT ANY WARRANTY**;
+NiuFan is distributed in the hope that it will be useful, but **WITHOUT ANY WARRANTY**;
 without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 See the GNU General Public License for more details.
 

@@ -1170,6 +1170,24 @@ function syncDonate() {
   renderDonate();
 }
 
+//: The line under the note mixes plain text, a link and highlighted channels,
+//: so each piece comes from donate.json instead of being hardcoded here.
+//: Only `url` produces an anchor, and every piece is escaped on the way in.
+function donateFeedback(parts) {
+  if (!Array.isArray(parts)) return '';
+  return parts.map((part) => {
+    if (!part || !part.text) return '';
+    const cls = part.accent ? 'donate-accent' : '';
+    if (part.url) {
+      return '<a' + (cls ? ' class="' + cls + '"' : '') + ' target="_blank"' +
+        ' rel="noopener noreferrer" href="' + esc(part.url) + '">' +
+        esc(part.text) + '</a>';
+    }
+    return cls ? '<span class="' + cls + '">' + esc(part.text) + '</span>'
+      : esc(part.text);
+  }).join('');
+}
+
 function renderDonate() {
   if (!donate) return;
   const body = $('#donate-body');
@@ -1183,12 +1201,14 @@ function renderDonate() {
   const links = (donate.links || []).map((link) =>
     '<a class="btn" target="_blank" rel="noopener noreferrer" href="' + esc(link.url) + '">' +
     esc(link.label) + '</a>').join('');
+  const feedback = donateFeedback(donate.feedback);
 
   body.innerHTML =
     (donate.message ? '<p class="donate-msg">' + esc(donate.message) + '</p>' : '') +
     (qrs ? '<div class="qr-grid">' + qrs + '</div>' : '') +
     (links ? '<div class="donate-links">' + links + '</div>' : '') +
-    (donate.note ? '<p class="curve-hint">' + esc(donate.note) + '</p>' : '');
+    (donate.note ? '<p class="curve-hint">' + esc(donate.note) + '</p>' : '') +
+    (feedback ? '<p class="curve-hint donate-foot">' + feedback + '</p>' : '');
 
   $$('.qr img', body).forEach((img) => {
     const source = DONATE_QR[img.dataset.qr];
